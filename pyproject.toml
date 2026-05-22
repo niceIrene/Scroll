@@ -1,0 +1,28 @@
+[project]
+name = "Scroll"
+version = "0.3.0"
+description = "Scroll: Benchmarking data management as a foundational agent capability"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "agentscope>=1.0.18",
+    "arize-phoenix>=13.21.0",
+    "arize-phoenix-evals>=2.13.0,<3",
+    "opentelemetry-api>=1.40.0",
+    "opentelemetry-sdk>=1.40.0",
+    "opentelemetry-exporter-otlp>=1.40.0",
+    "dspy>=2.6.0",
+]
+
+[project.scripts]
+Scroll = "Scroll.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,23 @@
+{
+  "environment": "vending",
+  "simulation": {
+    "num_sessions": 30,
+    "start_cash": 500.0,
+    "daily_fee": 2.0,
+    "machine_slots": 12,
+    "max_skus_in_machine": 6,
+    "lead_time_days": 3
+  },
+  "agent": {
+    "policy": "scroll",
+    "qwen_model_name": "gpt-5-mini",
+    "qwen_api_key_env": "OPENAI_API_KEY",
+    "qwen_api_base": "https://api.openai.com/v1",
+    "message_budget": 200,
+    "max_iters_per_turn": 6,
+    "max_output_tokens": 4096,
+    "context_max_tokens": 60000
+  },
+  "data_sources": {},
+  "benchmark": {}
+}

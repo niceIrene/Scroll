@@ -1,0 +1,6 @@
+[submodule "external/beam"]
+	path = external/beam
+	url = https://github.com/mohammadtavakoli78/BEAM.git
+[submodule "external/longmemeval"]
+	path = external/longmemeval
+	url = https://github.com/xiaowu0162/longmemeval
