@@ -11,10 +11,24 @@ See [`docs/scroll.md`](docs/scroll.md) for the design rationale and the (E, W, C
 ## Install
 
 ```bash
-git clone <repo> Scroll && cd Scroll
+git clone --recurse-submodules <repo> Scroll && cd Scroll
 uv venv .venv --python 3.11 --prompt Scroll
 source .venv/bin/activate
 uv pip install -e .
+```
+
+If you already cloned without `--recurse-submodules`, pull the submodules in afterwards:
+
+```bash
+git submodule update --init --recursive
+```
+
+The LongMemEval dataset (`external/longmemeval/data/longmemeval_*.json`) is **not** in the submodule — download it from the [HuggingFace mirror](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned) into `external/longmemeval/data/` before running LongMemEval configs.
+
+To keep submodules in sync when pulling, either run `git pull --recurse-submodules` ad-hoc, or set it as the default once:
+
+```bash
+git config --global submodule.recurse true
 ```
 
 Python 3.11+. Tested on macOS arm64; should work on Linux.
@@ -54,12 +68,6 @@ Each benchmark has a single canonical config and a reproduction script:
 bash scripts/reproduce_longmemeval.sh   # LongMemEval, qwen3.6-plus
 bash scripts/reproduce_vending.sh        # Vending, GPT-5-mini
 bash scripts/reproduce_beam.sh           # BEAM, 100K scale, qwen3.6-plus
-```
-
-For BEAM, initialize the dataset submodule first:
-
-```bash
-git submodule update --init external/beam
 ```
 
 ## Configuration
