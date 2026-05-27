@@ -206,19 +206,33 @@ def inject_probe(
             except Exception:  # noqa: BLE001
                 postscript = ""
 
-        question_text = (
-            outcomes_block
-            + f"[PROBE — {probe.question_id}]\n"
-            f"{probe.question}"
-        )
-        if postscript:
-            question_text += "\n\n" + postscript
+        # Optional per-probe wrapper that lands IMMEDIATELY before
+        # the question text — e.g. LongMemEvalAgent uses this to
+        # prepend "Today's Date: X (latest session_idx=N)\nQuestion: ".
+        # Default ("") leaves question rendering unchanged. NOT stripped:
+        # the agent owns the exact whitespace so it can drop the question
+        # inline or on a new line.
+        try:
+            question_prefix = agent.probe_user_question_prefix(probe) or ""
+        except TypeError:
+            question_prefix = agent.probe_user_question_prefix() or ""
+        except Exception:  # noqa: BLE001
+            question_prefix = ""
+
+        # No extra separator — the prefix carries its own trailing
+        # punctuation/whitespace so it can drop the question inline
+        # (mem0 style: "...\nQuestion: <text>") or on a new line, as
+        # the agent chooses.
+        question_block = (question_prefix + probe.question) if question_prefix else probe.question
 
         # Strategy-level retrieval hint (per-agent override of
-        # :meth:`BaseAgent.probe_user_hint`). Lives next to the probe
-        # question so it doesn't pollute the session-loop sys_prompt and
-        # so it stays adjacent to the Q the model is reading. Default
-        # ``""`` for agents that don't override.
+        # :meth:`BaseAgent.probe_user_hint`). Placed BEFORE the
+        # [PROBE — qid] header / question, mirroring Anthropic's
+        # claude-code <system-reminder> pattern: instructions are
+        # priors the model reads, then it processes the question
+        # through that lens. (Postscripts that are scorer-format
+        # reminders still go AFTER the question — those are tied to
+        # the specific Q.)
         #
         # ``probe`` is passed so per-question-type routers (e.g.
         # ``LongMemEvalAgent``) can dispatch the recipe by
@@ -232,8 +246,23 @@ def inject_probe(
                 agent_hint = (agent.probe_user_hint() or "").strip()
         except Exception:  # noqa: BLE001
             agent_hint = ""
+
+        # Horizontal rule around the PROBE block so it's visually distinct
+        # from the SYSTEM_REMINDERS above (agent_hint) and the postscript
+        # below — matches the in-prompt ``──`` separator style used in
+        # ``_LME_PROBE_HINT``.
+        _SEP = "─" * 66
+        question_text = outcomes_block
         if agent_hint:
-            question_text += "\n\n" + agent_hint
+            question_text += agent_hint + "\n\n"
+        question_text += (
+            f"{_SEP}\n"
+            f"[PROBE — {probe.question_id}]\n"
+            f"{question_block}\n"
+            f"{_SEP}"
+        )
+        if postscript:
+            question_text += "\n\n" + postscript
 
         prev_count = getattr(agent, "message_count", 0)
 

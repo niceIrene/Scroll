@@ -3,18 +3,24 @@
 BEAM and LongMemEval are both chat-memory benchmarks with identical
 ingest semantics: chat turns land in ``E`` as ``kind="chat_turn"``
 entries with ``metadata = {session_id, session_date, session_date_iso,
-turn_idx}``; the ingestor populates a SQLite + vector memoryspace
-with the same five-table schema.
+turn_idx}``; the ingestor consume/group/extract pipeline is shared.
 
-We re-use the LongMemEval ingest class via subclass alias so future
-divergence (e.g. BEAM-specific per-turn fields) has a clean place to
-land without touching the LME side.
+NOTE: this is the last remaining BEAM→LME cross-package import.
+The pipeline (``LMEIngestor``) is shared, but each env keeps its own
+schema (BEAM ships the original 5-table layout + typed extraction;
+LME dropped 3 tables for the v4 simplification). Extracting the
+pipeline into ``Scroll.tools.chat_memory`` and giving each env a
+thin subclass with only its schema would close the loop — deferred
+on the bet that the schemas may diverge further (FTS5 variants,
+typed-value tables) and a base-class refactor would be premature.
 """
 
 from __future__ import annotations
 
 from Scroll.tools.memoryspace import Memoryspace
 
+# Pipeline shared across chat-memory benchmarks; schema below is
+# BEAM-specific. See module docstring for the deferred split.
 from Scroll.benchmarks.longmemeval.ingestor import LMEIngestor
 
 
@@ -100,9 +106,13 @@ class BeamIngestor(LMEIngestor):
     """E → W for BEAM.
 
     Inherits from :class:`LMEIngestor` — the consume/group/extract
-    pipeline is identical. Subclass exists so future BEAM-specific
-    fields can be added without affecting LME.
+    pipeline is identical, but BEAM keeps the typed-extraction layer
+    on (preferences / facts / event_dates / session_text) because
+    BEAM's prompt + schema still reference those tables. LME's
+    default is ``extract_typed=False``.
     """
+
+    extract_typed = True
 
 
 __all__ = ["BeamIngestor", "ensure_schema"]

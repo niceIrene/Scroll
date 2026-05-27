@@ -27,6 +27,7 @@ import json
 import re
 from typing import Iterable
 
+from Scroll.core._ingestor import Ingestor
 from Scroll.core._models import LogEntry
 from Scroll.tools.memoryspace import Memoryspace
 
@@ -159,7 +160,7 @@ def _ingest_supplier_prices_from_mail(
 # ---------------------------------------------------------------------------
 
 
-class VendingIngestor:
+class VendingIngestor(Ingestor):
     """E → W for the vending env.
 
     Buffers entries per (kind, session_idx) so the existing

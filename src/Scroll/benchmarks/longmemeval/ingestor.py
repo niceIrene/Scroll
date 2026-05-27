@@ -22,14 +22,15 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
+from Scroll.core._ingestor import Ingestor
 from Scroll.core._models import LogEntry
 from Scroll.tools.memoryspace import Memoryspace
 
-from Scroll.benchmarks.longmemeval._time_utils import session_date_to_iso
-from Scroll.benchmarks.longmemeval.agents._date_utils import (
+from Scroll.benchmarks.longmemeval._time_utils import (
     _DOW,
     _MONTHS,
     _resolve_date_text,
+    session_date_to_iso,
 )
 
 
@@ -37,6 +38,14 @@ from Scroll.benchmarks.longmemeval.agents._date_utils import (
 # Schema
 # ---------------------------------------------------------------------------
 
+# Slimmed LME schema. Previously held 5 tables; the v4 500-QA tool-usage
+# audit showed user_preferences / event_dates / facts received <2% of
+# agent queries (1-2 hits out of 250+), and sessions.session_text was a
+# duplicate of chat_turns content with even rarer access. All four were
+# pre-extracted "convenience" surfaces the agent never reached for —
+# qwen3.7-max overwhelmingly prefers WHERE content LIKE on the raw
+# rounds view. BEAM still ships those tables in its own schema and uses
+# the typed-extraction layer of LMEIngestor (see ``extract_typed``).
 _LME_SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS chat_turns (
     session_idx      INTEGER NOT NULL,
@@ -49,49 +58,16 @@ CREATE TABLE IF NOT EXISTS chat_turns (
     PRIMARY KEY (session_idx, turn_idx)
 );
 
-CREATE TABLE IF NOT EXISTS user_preferences (
-    session_idx INTEGER NOT NULL,
-    turn_idx    INTEGER NOT NULL,
-    polarity    TEXT NOT NULL,                -- 'like' | 'dislike' | 'acquired'
-    target      TEXT NOT NULL,
-    sentence    TEXT NOT NULL,
-    PRIMARY KEY (session_idx, turn_idx, polarity, target)
-);
-
-CREATE TABLE IF NOT EXISTS event_dates (
-    session_idx          INTEGER NOT NULL,
-    turn_idx             INTEGER NOT NULL,
-    date_text            TEXT NOT NULL,
-    date_iso             TEXT,
-    relative_offset_days INTEGER,
-    sentence             TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS facts (
-    session_idx INTEGER NOT NULL,
-    turn_idx    INTEGER NOT NULL,
-    fact_type   TEXT NOT NULL,
-    fact_text   TEXT NOT NULL,
-    sentence    TEXT NOT NULL,
-    PRIMARY KEY (session_idx, turn_idx, fact_type, fact_text)
-);
-
 CREATE TABLE IF NOT EXISTS sessions (
     session_idx      INTEGER PRIMARY KEY,
     session_id       TEXT,
     session_date_iso TEXT,
-    session_ts_iso   TEXT,
-    session_text     TEXT
+    session_ts_iso   TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_chat_turns_role          ON chat_turns(role);
-CREATE INDEX IF NOT EXISTS idx_chat_turns_date          ON chat_turns(session_date_iso);
-CREATE INDEX IF NOT EXISTS idx_user_preferences_target  ON user_preferences(target);
-CREATE INDEX IF NOT EXISTS idx_user_preferences_polarity ON user_preferences(polarity);
-CREATE INDEX IF NOT EXISTS idx_event_dates_iso          ON event_dates(date_iso);
-CREATE INDEX IF NOT EXISTS idx_event_dates_offset       ON event_dates(relative_offset_days);
-CREATE INDEX IF NOT EXISTS idx_facts_type               ON facts(fact_type);
-CREATE INDEX IF NOT EXISTS idx_sessions_date_iso        ON sessions(session_date_iso);
+CREATE INDEX IF NOT EXISTS idx_chat_turns_role     ON chat_turns(role);
+CREATE INDEX IF NOT EXISTS idx_chat_turns_date     ON chat_turns(session_date_iso);
+CREATE INDEX IF NOT EXISTS idx_sessions_date_iso   ON sessions(session_date_iso);
 
 CREATE VIEW IF NOT EXISTS rounds AS
 SELECT
@@ -104,6 +80,46 @@ FROM chat_turns u
 JOIN chat_turns a
   ON a.session_idx = u.session_idx AND a.turn_idx = u.turn_idx + 1
 WHERE u.role = 'user' AND a.role = 'assistant';
+
+-- FTS5 keyword index over chat_turns.content. `external content` mode:
+-- the FTS table stores its own tokenized index but reads content via
+-- the rowid back-pointer to chat_turns, so no row duplication.
+-- Porter stemmer collapses inflections ("running" matches "run"); the
+-- unicode61 tokenizer handles punctuation + casefolding. This replaces
+-- `WHERE content LIKE '%X%'` full-table scans (O(rows)) with FTS index
+-- lookups (O(matching docs)) — critical on M-split / BEAM where the
+-- haystack grows 10-100x larger than S-split.
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_turns_fts
+USING fts5(
+    content,
+    content='chat_turns',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+-- Keep the FTS index in lockstep with chat_turns. chat_turns is
+-- append-only at runtime (ingestor never UPDATEs / DELETEs rows), so
+-- an AFTER INSERT trigger is sufficient. Delete/update triggers are
+-- included for offline ``rebuild-w`` correctness.
+CREATE TRIGGER IF NOT EXISTS chat_turns_fts_ai AFTER INSERT ON chat_turns
+BEGIN
+    INSERT INTO chat_turns_fts(rowid, content)
+    VALUES (new.rowid, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chat_turns_fts_ad AFTER DELETE ON chat_turns
+BEGIN
+    INSERT INTO chat_turns_fts(chat_turns_fts, rowid, content)
+    VALUES ('delete', old.rowid, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chat_turns_fts_au AFTER UPDATE ON chat_turns
+BEGIN
+    INSERT INTO chat_turns_fts(chat_turns_fts, rowid, content)
+    VALUES ('delete', old.rowid, old.content);
+    INSERT INTO chat_turns_fts(rowid, content)
+    VALUES (new.rowid, new.content);
+END;
 """
 
 
@@ -267,21 +283,33 @@ def _extract_facts(text: str) -> list[tuple[str, str, str]]:
 # ---------------------------------------------------------------------------
 
 
-class LMEIngestor:
-    """E → W for LongMemEval.
+class LMEIngestor(Ingestor):
+    """E → W for LongMemEval (and BEAM via :class:`BeamIngestor`).
 
     Consumes ``kind="chat_turn"`` entries. Each entry carries
     ``metadata = {session_id, session_date, session_date_iso, turn_idx}``;
     the ingestor groups them by ``session_idx`` and emits:
 
       - one ``chat_turns`` row per turn,
-      - per-turn ``user_preferences`` / ``facts`` / ``event_dates`` rows,
-      - one ``sessions`` row per session (joined session_text),
-      - per-turn + per-session vector entries.
+      - one ``sessions`` row per session,
+      - per-turn + per-session vector entries,
+      - and (only when ``extract_typed=True``) per-turn
+        ``user_preferences`` / ``facts`` / ``event_dates`` rows plus
+        a ``sessions.session_text`` full-transcript column.
 
     Other entry kinds (``code_exec``, ``rlm_call``, ``briefing_note``,
     etc.) are silently ignored — they don't carry chat data.
+
+    ``extract_typed`` controls the typed-value extraction layer
+    (preferences / facts / event_dates / session_text). Default is
+    ``False`` — the v4 500-QA audit showed the LME agent issued <2%
+    of queries against those tables, so they're not worth populating
+    on the LME path. BEAM's :class:`BeamIngestor` flips it back to
+    ``True`` because its prompt still references those tables and
+    its schema retains them.
     """
+
+    extract_typed: bool = False
 
     def __init__(self, ms: Memoryspace) -> None:
         self.ms = ms
@@ -339,47 +367,48 @@ class LMEIngestor:
             if not content:
                 continue
             turn_facts: list[str] = []
-            if role == "user":
-                pref_rows = list(_extract_preferences(content))
-                pref_rows.extend(_extract_acquired_preferences(content))
-                for polarity, target, sentence in pref_rows:
+            if self.extract_typed:
+                if role == "user":
+                    pref_rows = list(_extract_preferences(content))
+                    pref_rows.extend(_extract_acquired_preferences(content))
+                    for polarity, target, sentence in pref_rows:
+                        try:
+                            cur.execute(
+                                "INSERT OR IGNORE INTO user_preferences "
+                                "(session_idx, turn_idx, polarity, target, sentence) "
+                                "VALUES (?,?,?,?,?)",
+                                (session_idx, turn_idx, polarity, target, sentence),
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        turn_facts.append(f"{polarity}={target}")
+                    for fact_type, fact_text, sentence in _extract_facts(content):
+                        try:
+                            cur.execute(
+                                "INSERT OR IGNORE INTO facts "
+                                "(session_idx, turn_idx, fact_type, fact_text, sentence) "
+                                "VALUES (?,?,?,?,?)",
+                                (session_idx, turn_idx, fact_type, fact_text, sentence),
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        turn_facts.append(f"{fact_type}={fact_text}")
+                for date_text, date_iso, offset, sentence in _extract_dates(
+                    content, anchor_iso=session_date_iso_str,
+                    fallback_year=fallback_year,
+                ):
                     try:
                         cur.execute(
-                            "INSERT OR IGNORE INTO user_preferences "
-                            "(session_idx, turn_idx, polarity, target, sentence) "
-                            "VALUES (?,?,?,?,?)",
-                            (session_idx, turn_idx, polarity, target, sentence),
+                            "INSERT INTO event_dates "
+                            "(session_idx, turn_idx, date_text, date_iso, "
+                            " relative_offset_days, sentence) "
+                            "VALUES (?,?,?,?,?,?)",
+                            (session_idx, turn_idx, date_text, date_iso, offset, sentence),
                         )
                     except Exception:  # noqa: BLE001
                         pass
-                    turn_facts.append(f"{polarity}={target}")
-                for fact_type, fact_text, sentence in _extract_facts(content):
-                    try:
-                        cur.execute(
-                            "INSERT OR IGNORE INTO facts "
-                            "(session_idx, turn_idx, fact_type, fact_text, sentence) "
-                            "VALUES (?,?,?,?,?)",
-                            (session_idx, turn_idx, fact_type, fact_text, sentence),
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
-                    turn_facts.append(f"{fact_type}={fact_text}")
-            for date_text, date_iso, offset, sentence in _extract_dates(
-                content, anchor_iso=session_date_iso_str,
-                fallback_year=fallback_year,
-            ):
-                try:
-                    cur.execute(
-                        "INSERT INTO event_dates "
-                        "(session_idx, turn_idx, date_text, date_iso, "
-                        " relative_offset_days, sentence) "
-                        "VALUES (?,?,?,?,?,?)",
-                        (session_idx, turn_idx, date_text, date_iso, offset, sentence),
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-                turn_facts.append(f"date={date_iso or date_text}")
-            all_session_facts.extend(turn_facts)
+                    turn_facts.append(f"date={date_iso or date_text}")
+                all_session_facts.extend(turn_facts)
             facts_blob = ""
             if turn_facts:
                 facts_blob = "\n[facts] " + "; ".join(turn_facts)
@@ -396,13 +425,23 @@ class LMEIngestor:
 
         if session_text:
             try:
-                cur.execute(
-                    "INSERT OR REPLACE INTO sessions "
-                    "(session_idx, session_id, session_date_iso, session_ts_iso, "
-                    " session_text) VALUES (?,?,?,?,?)",
-                    (session_idx, session_id_str, session_date_iso_str, ts_iso,
-                     session_text[:20000]),
-                )
+                if self.extract_typed:
+                    # BEAM path: schema has the session_text column.
+                    cur.execute(
+                        "INSERT OR REPLACE INTO sessions "
+                        "(session_idx, session_id, session_date_iso, session_ts_iso, "
+                        " session_text) VALUES (?,?,?,?,?)",
+                        (session_idx, session_id_str, session_date_iso_str, ts_iso,
+                         session_text[:20000]),
+                    )
+                else:
+                    # LME path: trimmed schema, no session_text column.
+                    cur.execute(
+                        "INSERT OR REPLACE INTO sessions "
+                        "(session_idx, session_id, session_date_iso, session_ts_iso) "
+                        "VALUES (?,?,?,?)",
+                        (session_idx, session_id_str, session_date_iso_str, ts_iso),
+                    )
             except Exception:  # noqa: BLE001
                 pass
 

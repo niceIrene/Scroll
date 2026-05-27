@@ -136,7 +136,7 @@ Class: [`VendingAgent`](../src/Scroll/benchmarks/vending/agents/agent.py).
 
 Class: [`BeamAgent`](../src/Scroll/benchmarks/beam/agents/agent.py).
 
-The BEAM agent is a *leaner* version of `LongMemEvalAgent` — no procedural-hints distillation (BEAM is single-pass; no cross-task store), no qtype-conditional probe-hint composition (categories ride on the env's `probe_user_postscript` instead). Shares regex extractors and date utilities with LME by direct import; this is a pragmatic shortcut that could be lifted to a `Scroll.tools.chat_memory` module if a fourth chat-memory benchmark joins.
+The BEAM agent is a *leaner* version of `LongMemEvalAgent` — no procedural-hints distillation (BEAM is single-pass; no cross-task store), no qtype-conditional probe-hint composition (categories ride on the env's `probe_user_postscript` instead). Shared chat-memory primitives (time-range extractor, probe/handle session bodies) live in `Scroll.tools.chat_memory`; the BEAM-side ingestor still subclasses `LMEIngestor` for the regex extractors.
 
 ---
 
@@ -163,12 +163,30 @@ Three points:
 
 ---
 
+## Results
+
+### LongMemEval (full 500-QA `_s` split incl. abstention twins)
+
+Agent: `qwen3.7-max` (Dashscope CN). Judge: `qwen3.6-plus` with a `<judge_thinking>` step. Pipeline: type-specific qtype templates (multi-session count / KU stale-value / temporal) + grace-turn rescue + mem0-style synthesis rules at commit time. Full provenance: [`output/longmemeval_qwen37max_v4/FAILURE_REPORT.md`](../output/longmemeval_qwen37max_v4/FAILURE_REPORT.md).
+
+| Type | Acc | n |
+|---|---:|---:|
+| single-session-assistant | 0.982 | 56 |
+| knowledge-update | 0.974 | 78 |
+| single-session-user | 0.971 | 70 |
+| temporal-reasoning | 0.917 | 133 |
+| single-session-preference | 0.900 | 30 |
+| multi-session | 0.789 | 133 |
+| **OVERALL** | **0.906** | **500** |
+
+**Provenance of the +10.6pp delta from a naive baseline:** qwen3.6-plus + no fixes ≈ 0.80 → + grace-turn commit-rescue + abstention fallback (0.866) → + qwen3.7-max upgrade (0.888) → + per-qtype forcing templates + mem0-style synthesis rules (0.906). The biggest single move is the KU stale-value template + synthesis rules, which together took knowledge-update from 0.821 to 0.974 (+15pp on the subset).
+
 ## Reproducing the paper numbers
 
 Each benchmark ships a single canonical config and a reproduction script:
 
 ```bash
-# LongMemEval (500 QA, qwen3.6-plus)
+# LongMemEval (500 QA, qwen3.7-max)
 bash scripts/reproduce_longmemeval.sh
 
 # Vending (30-day, GPT-5-mini)

@@ -17,9 +17,9 @@ Requirements:
     ``PythonInterpreter`` runs Deno/Pyodide subprocesses.
 
 Run:
-    python scripts/test_code_auto_v2_rlm.py
-    python scripts/test_code_auto_v2_rlm.py \\
-        --config configs/longmemeval/scroll_s.json --verbose
+    python scripts/test_rlm.py
+    python scripts/test_rlm.py \\
+        --config configs/longmemeval/scroll_qwen37max.json --verbose
 """
 
 from __future__ import annotations

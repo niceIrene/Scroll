@@ -89,6 +89,21 @@ class BaseAgent(ABC):
         """
         return ""
 
+    def probe_user_question_prefix(self, probe=None) -> str:
+        """Text prepended IMMEDIATELY BEFORE the probe question text.
+
+        Sits inside the same user-turn message, between the framework
+        ``[PROBE — qid]`` header and ``probe.question``. Use it for
+        per-probe data the model needs RIGHT NEXT TO the question
+        (e.g. LongMemEvalAgent wraps with ``Today's Date: YYYY-MM-DD
+        (latest session_idx=N)\\nQuestion: `` so date arithmetic
+        anchors and KU ``ORDER BY session_idx DESC LIMIT 1`` queries
+        have the index in hand).
+
+        Default: empty. Override in subclasses.
+        """
+        return ""
+
     async def _on_probe_complete(
         self,
         *,
@@ -110,6 +125,17 @@ class BaseAgent(ABC):
         Async so distillation can call sub-LM without blocking the
         single-threaded run loop. Fires in ``inject_probe`` after
         ``scoring_fn`` returns, so subclasses see the final score.
+        """
+        return None
+
+    def augment_efficiency(self, efficiency: dict) -> None:
+        """Hook: agent-side fields to merge into the per-run efficiency dict.
+
+        Called by ``benchmark.py`` after the env's ``compute_efficiency_metrics``
+        and after substrate-level token/LM-call accounting. Default no-op.
+        Subclasses mutate ``efficiency`` in place to surface env-specific
+        counters that aren't visible to the env (e.g. LME's per-task
+        distilled-lesson count).
         """
         return None
 
@@ -205,7 +231,16 @@ def _init_model(cfg):
         _thinking = getattr(cfg, "enable_thinking", None)
         if _thinking is None:
             _thinking = False
-        generate_kwargs["extra_body"] = {"enable_thinking": bool(_thinking)}
+        extra_body: dict = {"enable_thinking": bool(_thinking)}
+        # qwen-native reasoning intensity. Only meaningful when
+        # enable_thinking is True; pass-through to Dashscope which
+        # may honor it (qwen3-*-thinking variants) or silently
+        # ignore (mainline qwen3.7-max via compat-mode — empirically
+        # unconfirmed).
+        _budget = getattr(cfg, "thinking_budget", None)
+        if _budget is not None:
+            extra_body["thinking_budget"] = int(_budget)
+        generate_kwargs["extra_body"] = extra_body
     model = OpenAIChatModel(
         model_name=cfg.qwen_model_name,
         api_key=api_key,

@@ -12,7 +12,7 @@ from Scroll.benchmarks.vending.agents.agent import VendingAgent
 
 
 def create_agent(policy: str, cfg, log, data):
-    if policy in ("scroll", "code_auto"):
+    if policy == "scroll":
         return VendingAgent(cfg, log, data)
     raise ValueError(f"unknown vending policy {policy!r}")
 

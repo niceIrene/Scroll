@@ -247,6 +247,7 @@ def _run_one_qa(job: dict) -> dict:
         "total_tokens": int(efficiency.get("total_tokens", 0) or 0),
         "lessons_count": int(efficiency.get("lessons_count", 0) or 0),
         "message_count": int(efficiency.get("message_count", 0) or 0),
+        "wall_seconds": float(efficiency.get("wall_seconds", 0.0) or 0.0),
     }
 
 
@@ -549,6 +550,10 @@ def main() -> None:
             f.write(json.dumps({"question_id": r["question_id"], "hypothesis": r["hypothesis"]}) + "\n")
 
     n = max(1, len(per_qa_results))
+    walls = [r["wall_seconds"] for r in per_qa_results if r.get("wall_seconds")]
+    walls_sorted = sorted(walls)
+    median_wall = walls_sorted[len(walls_sorted) // 2] if walls_sorted else 0.0
+    p95_wall = walls_sorted[int(0.95 * len(walls_sorted))] if walls_sorted else 0.0
     cost = {
         "avg_lm_calls": round(sum(r["lm_calls"] for r in per_qa_results) / n, 2),
         "avg_prompt_tokens": round(sum(r["prompt_tokens"] for r in per_qa_results) / n, 1),
@@ -559,6 +564,13 @@ def main() -> None:
         "total_prompt_tokens": sum(r["prompt_tokens"] for r in per_qa_results),
         "total_completion_tokens": sum(r["completion_tokens"] for r in per_qa_results),
         "total_lessons_written": sum(r["lessons_count"] for r in per_qa_results),
+        # Wall-time stats per QA: avg / median / p95. Wall clock measured
+        # from inside ``benchmark.py::run_single`` so it reflects true
+        # per-QA cost (agent + judge), not orchestrator-side overhead.
+        "avg_wall_seconds": round(sum(walls) / n, 1) if walls else 0.0,
+        "median_wall_seconds": round(median_wall, 1),
+        "p95_wall_seconds": round(p95_wall, 1),
+        "total_wall_seconds": round(sum(walls), 1),
     }
     summary = {
         "policy": policy,
@@ -591,6 +603,10 @@ def main() -> None:
     print(f"  cost/QA: lm_calls={cost['avg_lm_calls']:.1f}  "
           f"tokens={cost['avg_total_tokens']:.0f} "
           f"(prompt={cost['avg_prompt_tokens']:.0f} + completion={cost['avg_completion_tokens']:.0f})")
+    print(f"  wall/QA: avg={cost['avg_wall_seconds']:.1f}s  "
+          f"median={cost['median_wall_seconds']:.1f}s  "
+          f"p95={cost['p95_wall_seconds']:.1f}s  "
+          f"(total serial-eq: {cost['total_wall_seconds']/60:.1f} min)")
     print(f"  lessons/QA: {cost['avg_lessons_count']:.2f}  "
           f"(total written across run: {cost['total_lessons_written']})")
     print(f"hypotheses → {hyp_path}")

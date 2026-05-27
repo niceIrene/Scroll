@@ -132,6 +132,15 @@ class AgentConfig:
     # chain-of-thought).
     enable_thinking: bool | None = None
 
+    # qwen-native reasoning intensity (token-budget on the thinking
+    # channel). Only takes effect alongside ``enable_thinking=True``;
+    # forwarded as ``extra_body.thinking_budget`` to Dashscope. Typical
+    # range 1024-32768. ``None`` omits the field (Dashscope uses model
+    # default). Coverage varies by model — qwen3-*-thinking variants
+    # honor it reliably; mainline qwen3.7-max may silently ignore
+    # both enable_thinking and thinking_budget via compat-mode.
+    thinking_budget: int | None = None
+
     message_budget: int = 2000
     max_iters_per_turn: int = 50
     context_max_tokens: int = 30000
@@ -184,6 +193,7 @@ class AgentConfig:
     # is used. Set higher for runs where the shared memoryspace is
     # pre-seeded from a strong-model run with rich hints per qtype.
     procedural_hints_in_prompt: int | None = None
+
 
     # Vending-specific defaults (will move to env config later)
     target_margin: float = 0.65

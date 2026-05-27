@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import statistics
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
@@ -180,10 +181,39 @@ def run_single(
     else:
         span_name = f"{env_id}/{policy}.seed{seed}"
     with _tracer.start_as_current_span(span_name) as run_span:
-        return _run_single_inner(
+        _t0 = time.perf_counter()
+        stats = _run_single_inner(
             run_span, seed, env_cfg, agent_cfg, data_cfg,
             fresh, checkpoint, output_dir, env_id,
         )
+        wall_seconds = round(time.perf_counter() - _t0, 2)
+        # Surface end-to-end per-QA wall time as part of efficiency so
+        # the orchestrator's summary aggregator can avg / sum it. The
+        # value persisted to ``probe_results.json`` was written before
+        # we knew the final number; patch it in-place if we wrote one.
+        stats.efficiency["wall_seconds"] = wall_seconds
+        if output_dir:
+            _patch_wall_seconds_on_disk(output_dir, wall_seconds)
+        return stats
+
+
+def _patch_wall_seconds_on_disk(output_dir: str, wall_seconds: float) -> None:
+    """Append ``efficiency.wall_seconds`` to the already-written
+    ``probe_results.json``. Written outside of the main inner-run path
+    because the wall-time can only be measured after the agent + judge
+    are fully done.
+    """
+    pr_path = Path(output_dir) / "probe_results.json"
+    if not pr_path.exists():
+        return
+    try:
+        d = json.loads(pr_path.read_text())
+        eff = d.setdefault("efficiency", {})
+        eff["wall_seconds"] = wall_seconds
+        pr_path.write_text(json.dumps(d, indent=2, default=str))
+    except Exception:  # noqa: BLE001
+        # Don't fail the run on a metric-bookkeeping error.
+        pass
 
 
 def _run_single_inner(
@@ -300,6 +330,11 @@ def _run_single_inner(
         efficiency["completion_tokens"] = completion_t
         efficiency["total_tokens"] = prompt_t + completion_t
         efficiency["message_count"] = getattr(state, "_message_count", 0)
+
+    try:
+        agent.augment_efficiency(efficiency)
+    except Exception:  # noqa: BLE001
+        pass
 
     # Compute probe scores. ``avg_probe_score`` is over every probe;
     # any env-specific roll-ups (e.g. vending's A/B category split) come

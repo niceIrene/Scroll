@@ -35,13 +35,13 @@ from Scroll.benchmarks.beam.ingestor import (
     BeamIngestor,
     ensure_schema as _beam_ensure_schema,
 )
-from Scroll.benchmarks.longmemeval.agents._common import (
+from Scroll.tools.chat_memory import (
     handle_only_body,
     make_time_range_extractor,
     probe_session_body,
 )
-from Scroll.benchmarks.longmemeval.agents._namespace import (
-    make_lme_namespace,
+from Scroll.tools.chat_memory import (
+    make_chat_memory_namespace,
     write_chat_turn_entries,
 )
 
@@ -346,7 +346,7 @@ class BeamAgent(ScrollAgent):
         }
 
     def _base_namespace(self) -> dict:
-        return make_lme_namespace(self._tool_state, agent=self)
+        return make_chat_memory_namespace(self._tool_state, agent=self)
 
     def namespace_docs(self) -> str:
         return _NAMESPACE_DOCS

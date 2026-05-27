@@ -8,6 +8,23 @@ Three benchmarks ship with the framework: **LongMemEval** (chat-memory probes), 
 
 See [`docs/scroll.md`](docs/scroll.md) for the design rationale and the (E, W, CodeAct) decomposition.
 
+## Headline result
+
+**LongMemEval `_s` split, 500 QA (incl. abstention twins): `acc = 0.906`**
+SCROLL framework (E + W + CodeAct) + qwen3.7-max agent + qwen3.6-plus judge. Config: [`configs/longmemeval/scroll_qwen37max.json`](configs/longmemeval/scroll_qwen37max.json). Full provenance and failure analysis: [`output/longmemeval_qwen37max_v4/FAILURE_REPORT.md`](output/longmemeval_qwen37max_v4/FAILURE_REPORT.md).
+
+| Type | Acc | n |
+|---|---:|---:|
+| single-session-assistant | 0.982 | 56 |
+| knowledge-update | 0.974 | 78 |
+| single-session-user | 0.971 | 70 |
+| temporal-reasoning | 0.917 | 133 |
+| single-session-preference | 0.900 | 30 |
+| multi-session | 0.789 | 133 |
+| **OVERALL** | **0.906** | **500** |
+
+What the framework actually contributes vs the model: a naive `qwen3.6-plus` agent answering the same questions ends at ~0.80; replacing it with `qwen3.7-max` alone only gets to 0.888. The remaining +1.8 pp comes from the SCROLL-side pipeline — per-qtype forcing templates (multi-session count, KU stale-value, temporal-reasoning), a grace-turn rescue against budget-exhausted termination, and a commit-time synthesis block. The breakdown is in the failure report above.
+
 ## Install
 
 ```bash
@@ -37,12 +54,12 @@ Python 3.11+. Tested on macOS arm64; should work on Linux.
 
 ```bash
 # LongMemEval — one task to verify the install
-Scroll --config configs/longmemeval/scroll_s.json --seed 1
+Scroll --config configs/longmemeval/scroll_qwen37max.json --seed 1
 
-# Run the full 500-QA sweep in parallel
+# Run the full 500-QA sweep in parallel (the 0.906 number above)
 python scripts/run_longmemeval.py \
-    --config configs/longmemeval/scroll_s.json \
-    --seed 1 --max-parallel 4
+    --config configs/longmemeval/scroll_qwen37max.json \
+    --seed 1 --max-parallel 8 --include-abstention
 
 # Vending — 30-day single run
 Scroll --config configs/vending/scroll.json --seed 1
@@ -65,34 +82,40 @@ output/longmemeval/scroll_1_<hash>/
 Each benchmark has a single canonical config and a reproduction script:
 
 ```bash
-bash scripts/reproduce_longmemeval.sh   # LongMemEval, qwen3.6-plus
+bash scripts/reproduce_longmemeval.sh   # LongMemEval s-split, qwen3.7-max → 0.906
 bash scripts/reproduce_vending.sh        # Vending, GPT-5-mini
 bash scripts/reproduce_beam.sh           # BEAM, 100K scale, qwen3.6-plus
 ```
 
 ## Configuration
 
-Each run takes one JSON config file. Skeleton:
+Each run takes one JSON config file. Skeleton (matches the 0.906 LongMemEval config):
 
 ```json
 {
   "environment": "longmemeval",
   "simulation": {
-    "dataset_path": "external/longmemeval/data/longmemeval_oracle.json",
-    "judge_model": "qwen3-max",
-    "judge_api_key_env": "US_DASHSCOPE_API_KEY"
+    "dataset_path": "external/longmemeval/data/longmemeval_s_cleaned.json",
+    "judge_model": "qwen3.6-plus",
+    "judge_api_key_env": "US_DASHSCOPE_API_KEY",
+    "judge_api_base": "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
   },
   "agent": {
     "policy": "scroll",
-    "qwen_model_name": "qwen3.6-plus",
-    "qwen_api_key_env": "US_DASHSCOPE_API_KEY",
-    "max_iters_per_turn": 6,
-    "max_output_tokens": 4096
+    "qwen_model_name": "qwen3.7-max",
+    "qwen_api_key_env": "CN_DASHSCOPE_API_KEY",
+    "qwen_api_base_env": "CN_DASHSCOPE_BASE_URL",
+    "enable_thinking": false,
+    "max_iters_per_turn": 10,
+    "max_output_tokens": 4096,
+    "context_max_tokens": 60000,
+    "enable_playbook": false,
+    "enable_distillation": true
   }
 }
 ```
 
-The `agent.policy` field selects the per-env agent class (`scroll` for both envs; older `code_auto_v2` / `code_auto` aliases still resolve for backward compat).
+The `agent.policy` field selects the per-env agent class. Both LongMemEval and Vending currently expose a single policy: `"scroll"`.
 
 ### Provider routing
 
@@ -107,8 +130,18 @@ A `.env` file at repo root is sourced automatically.
 
 ## Tracing (optional)
 
+`arize-phoenix` is already installed by `uv pip install -e .`, so the
+`phoenix` CLI is on the venv path — no extra install step. Start a local
+Phoenix backend either way:
+
 ```bash
+# Option A: local process (uses the venv's phoenix CLI)
+.venv/bin/phoenix serve                              # UI at http://localhost:6006
+
+# Option B: Docker
 docker run -p 6006:6006 arizephoenix/phoenix:latest
+
+# Then point a run at it:
 Scroll --config configs/longmemeval/scroll_s.json --seed 1 \
     --tracing-url http://localhost:6006/v1/traces
 ```
@@ -151,7 +184,7 @@ scripts/
 ├── run_longmemeval.py         multi-QA orchestrator
 ├── run_parallel.py            Docker-parallel sweep
 ├── shard_lme_dataset.py       one-time dataset preprocessing
-└── test_code_auto_v2_rlm.py   RLM wrapper smoke test
+└── test_rlm.py                RLM wrapper smoke test
 ```
 
 ## Adding a new benchmark

@@ -26,7 +26,11 @@ src/Scroll/                     # framework
 ├── tools/                      agent-facing REPL primitives (log / ms / rlm)
 │   ├── _log_handle.py          LogHandle (read API over ConversationLog)
 │   ├── memoryspace.py          Memoryspace — auto-catches-up from E on every read/write
-│   └── _rlm.py                 make_dspy_rlm (dspy.RLM sub-agent factory)
+│   ├── _embed.py               bag-of-words cosine (cheap; LME ms.vector_query backend)
+│   ├── _rlm.py                 make_dspy_rlm (dspy.RLM sub-agent factory)
+│   └── chat_memory.py          shared LME+BEAM primitives: session bodies,
+│                               make_chat_memory_namespace, write_chat_turn_entries,
+│                               make_time_range_extractor
 ├── log.py                      ConversationLog (E, append-only JSONL)
 ├── benchmark.py                run_single, _run_session_loop, aggregate
 ├── cli.py                      `Scroll` CLI entry point (incl. `rebuild-w`)
@@ -34,17 +38,26 @@ src/Scroll/                     # framework
 ├── __init__.py, __main__.py
 └── benchmarks/                 # plug-in benchmarks (one subpkg per env)
     ├── longmemeval/            env: chat-memory probes (Wu et al., 2024)
-    │   ├── ingestor.py        LMEIngestor + schema + regex extractors
-    │   ├── agents/agent.py    LongMemEvalAgent
-    │   ├── env.py, datasource.py, catalog.py
-    │   └── tasks/probes.py     ProbeSpec list + LLM judge
+    │   ├── ingestor.py        LMEIngestor + 2-table schema + FTS5 + optional
+    │   │                        typed-extraction (gated by ``extract_typed``,
+    │   │                        default False for LME)
+    │   ├── env.py             LongMemEvalEnv + LongMemEvalEnvConfig (merged
+    │   │                        from old catalog.py)
+    │   ├── datasource.py     dataset loader (LongMemEvalItem + load_items)
+    │   │                        + runtime DataSource (merged from old dataset.py)
+    │   ├── _time_utils.py     session-metadata parser + free-text date-phrase
+    │   │                        resolver (merged from old agents/_date_utils.py)
+    │   ├── agents/agent.py    LongMemEvalAgent (qtype templates + synthesis rules
+    │   │                        + domain equivalences; grace-turn rescue)
+    │   └── tasks/probes.py     ProbeSpec list + LLM judge + compute_efficiency_metrics
     ├── vending/                env: long-horizon vending sim
     │   ├── ingestor.py        VendingIngestor + schema + env-snapshot serializer
     │   ├── agents/agent.py    VendingAgent
     │   ├── env.py, datasource.py, catalog.py, auto_ingest.py, tools.py
     │   └── tasks/probes.py     deterministic regex scorer
     └── beam/                   env: BEAM long-context chat-memory
-        ├── ingestor.py        BeamIngestor + schema (re-uses LME extract logic)
+        ├── ingestor.py        BeamIngestor + 5-table schema; subclasses
+        │                        LMEIngestor with extract_typed=True
         ├── agents/agent.py    BeamAgent
         ├── env.py, datasource.py, catalog.py, dataset.py
         └── tasks/probes.py     per-rubric-item LLM-judge scorer
@@ -87,9 +100,13 @@ uv pip install -e .
 source .venv/bin/activate
 
 # Single-task smoke for each env (runs the QA / day / batch the config points at)
-Scroll --config configs/longmemeval/scroll.json --seed 1
-Scroll --config configs/vending/scroll.json     --seed 1
-Scroll --config configs/beam/scroll.json        --seed 1
+Scroll --config configs/longmemeval/scroll_qwen37max.json --seed 1   # production (0.906 on _s 500-QA)
+Scroll --config configs/vending/scroll.json              --seed 1
+Scroll --config configs/beam/scroll.json                 --seed 1
+
+# Note: configs/longmemeval/ also has ``scroll.json`` (qwen3.6-plus baseline,
+# ~0.866) and ``scroll_qwen37max_m.json`` (production config pointed at the
+# M-split dataset).
 
 # Paper-number reproduction (one script per env)
 bash scripts/reproduce_longmemeval.sh
@@ -119,14 +136,14 @@ Common invocations (all flags via `.venv/bin/python scripts/run_longmemeval.py -
 
 | Goal | Flags |
 |---|---|
-| **Full 500 QA** (production sweep) | `--max-parallel 4 --include-abstention` |
+| **Full 500 QA** (production sweep) | `--max-parallel 8 --include-abstention` |
 | **One specific QA by id** | `--question-ids 32a9c8...` |
 | **N specific QAs by id** | `--question-ids id1 id2 id3` (space-separated) |
 | **First N items** (any type) | `--limit N` |
 | **All items of one type** | `--question-types multi-session` |
 | **N items per type** (stratified — recommended for fast sanity) | `--per-type 5` |
 | **N items of a few types** | `--question-types multi-session temporal-reasoning --per-type 5` |
-| **Parallel across cores** | `--max-parallel 4` (each QA in its own subprocess, ~5s startup overhead per subprocess) |
+| **Parallel across cores** | `--max-parallel 8` (each QA in its own subprocess, ~5s startup overhead per subprocess) |
 | **Include abstention items** | `--include-abstention` (default excludes `_abs`-suffixed items; full reproduction includes them) |
 | **Force fresh** (ignore checkpoints) | `--fresh` |
 | **Custom output root** | `--output-root output/lme_experiment_42` |
@@ -172,7 +189,8 @@ stdout preview (`cell.stdout_preview`), and tracked ops
 
 ## Configs
 
-Each run takes one JSON config under `configs/<env>/`. Schema:
+Each run takes one JSON config under `configs/<env>/`. Schema (matches the
+shipped LME production config):
 
 ```json
 {
@@ -180,19 +198,21 @@ Each run takes one JSON config under `configs/<env>/`. Schema:
   "simulation": { ... },               // parsed by <env>.parse_env_config
   "agent": {
     "policy": "scroll",                // dispatches to benchmarks/<env>/agents/__init__.create_agent
-    "qwen_model_name": "...",
-    "qwen_api_key_env": "US_DASHSCOPE_API_KEY",
-    "enable_thinking": false,          // qwen-family chain-of-thought toggle (Dashscope only)
-    "max_iters_per_turn": 6,           // cap on CodeAct loop iters inside one session
-    "enable_playbook": true,           // LME-only: append distilled playbook block to probe prompt
+    "qwen_model_name": "qwen3.7-max",
+    "qwen_api_key_env": "CN_DASHSCOPE_API_KEY",
+    "qwen_api_base_env": "CN_DASHSCOPE_BASE_URL",
+    "enable_thinking": false,          // qwen-family CoT toggle (no-op on qwen3.7-max via compat-mode)
+    "thinking_budget": null,           // qwen-native budget in tokens; pairs with enable_thinking
+    "max_iters_per_turn": 10,          // cap on CodeAct loop iters inside one session
+    "max_output_tokens": 4096,
+    "context_max_tokens": 60000,
+    "enable_playbook": false,          // LME-only: append distilled playbook block to probe prompt
     "enable_distillation": true        // LME-only: write new procedural hints back after each probe
   },
   "data_sources": {},
   "benchmark": {}
 }
 ```
-
-Backward-compat policy aliases (`code_auto_v2` → LongMemEval, `code_auto` → Vending) still resolve in `create_agent`.
 
 ## Conventions
 
@@ -201,12 +221,12 @@ Backward-compat policy aliases (`code_auto_v2` → LongMemEval, `code_auto` → 
 - **Per-env config files**: `configs/<env>/scroll<_variant>.json` (variant = model, dataset split, ablation tag).
 - **Output dirs**: `output/<env>/<policy>_<seed>_<config-hash8>/` for single runs; LongMemEval multi-QA sweeps nest `qa_<question_id>/` under that.
 - **Tracing**: optional via `--tracing-url`. Phoenix-compatible OTLP. See `Scroll._tracing` and the CLI `--help`.
-- **Backward compatibility**: keep old policy names as aliases in `create_agent`; don't break stale configs unless explicitly renaming them.
+- **Single policy per env**: LME and Vending both expose only `"policy": "scroll"` (old `code_auto_v2` / `code_auto` aliases were removed). Adding a new policy means adding a branch to that env's `create_agent`.
 
 ## What's intentionally not here
 
 - **Baselines**: the earlier consolidation removed every non-SCROLL agent (basic, code_agent, agentscope_reme, rlm, database_*, adaptive*). Restoring one for paper comparison is a future task; see `docs/scroll.md` → "Why this is publishable" for context.
-- **vending/taubench-era scripts**: deleted (`extract_sft_pairs.py`, `generate_sweep_report.py`, sweep_*.sh, etc.). Only the orchestrator + Docker-parallel runner + dataset sharder + RLM smoke test survive in `scripts/`.
+- **vending/taubench-era scripts**: deleted (`extract_sft_pairs.py`, `generate_sweep_report.py`, sweep_*.sh, etc.). Current `scripts/` contains: `run_longmemeval.py` (multi-QA orchestrator), `run_parallel.py` (Docker-parallel sweep), `shard_lme_dataset.py` (one-time preprocessing), `rejudge_run.py` (re-score an existing run with the current judge), `test_rlm.py` (RLM wrapper smoke), and three `reproduce_*.sh` scripts.
 
 ## When editing the substrate
 

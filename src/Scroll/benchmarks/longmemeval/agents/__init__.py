@@ -11,7 +11,7 @@ from Scroll.benchmarks.longmemeval.agents.agent import LongMemEvalAgent
 
 
 def create_agent(policy: str, cfg, log, data):
-    if policy in ("scroll", "code_auto_v2"):
+    if policy == "scroll":
         return LongMemEvalAgent(cfg, log, data)
     raise ValueError(f"unknown longmemeval policy {policy!r}")
 
