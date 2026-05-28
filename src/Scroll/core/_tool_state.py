@@ -86,16 +86,6 @@ class ToolState:
     _prompt_tokens: int = 0
     _completion_tokens: int = 0
 
-    # Back-compat alias for callers (legacy code paths) that still
-    # read ``_session_ended``. Drop in PR #6.
-    @property
-    def _session_ended(self) -> bool:
-        return self._turn_ended
-
-    @_session_ended.setter
-    def _session_ended(self, value: bool) -> None:
-        self._turn_ended = bool(value)
-
     def reset_turn(self) -> None:
         """Reset per-turn transient state (called at start of each turn).
 
@@ -105,10 +95,6 @@ class ToolState:
         self._turn_ended = False
         self._action_log = []
         self._sub_agent_log = []
-
-    # Back-compat aliases for callers that still use the old names.
-    reset_session = reset_turn
-    reset_day = reset_turn
 
     def _tick(self) -> None:
         self._message_count += 1

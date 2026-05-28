@@ -689,7 +689,3 @@ def set_judge_config(cfg) -> None:
 
 def get_probes_for_turn(turn_idx: int) -> list[ProbeSpec]:
     return [p for p in PROBES if p.turn_idx == turn_idx]
-
-
-# Back-compat alias; drop in PR #6.
-get_probes_for_session = get_probes_for_turn

@@ -535,11 +535,6 @@ class CodeActAgent(BaseAgent):
     def turn_ended(self) -> bool:
         return self._tool_state._turn_ended
 
-    # Back-compat property; drop in PR #6.
-    @property
-    def session_ended(self) -> bool:
-        return self._tool_state._turn_ended
-
     def receive_outcomes(self, turn_idx: int, logs: list[str]) -> None:
         self._pending_env_outcomes = list(logs)
 
@@ -832,7 +827,7 @@ class CodeActAgent(BaseAgent):
             if ended:
                 break
 
-        await self._on_session_end_async()
+        await self._on_turn_end_async()
         if not ended:
             # Either fell off the iteration cap, or model emitted a
             # no-tool-call response (= "I'm done with this turn").
@@ -926,9 +921,6 @@ class CodeActAgent(BaseAgent):
         namespace wipe.
         """
         return None
-
-    # Back-compat alias; drop in PR #6.
-    _on_session_end_async = _on_turn_end_async
 
     # ------------------------------------------------------------------
     # Logging / mirroring

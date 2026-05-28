@@ -90,15 +90,30 @@ class BaseEnvironment(ABC):
     def get_end_of_task_probes(self) -> list[ProbeSpec]:
         """Return probes that fire AFTER the last turn, not on a turn.
 
-        Default: empty. Envs that today use the ``+1 probe-only turn``
-        trick (LME, BEAM) will move their probes here in PRs #4 / #5
-        and drop the trick.
-
-        Probes returned here fire in the same agent session as the
-        last turn (cheap, shared in-context history). Future ``probe
-        isolation`` modes (PR #6) can spawn a fresh session per probe.
+        Default: empty. LME (PR #4) and BEAM (PR #5) override.
         """
         return []
+
+    def probe_isolation(self) -> str:
+        """How end-of-task probes are isolated from each other.
+
+        Two modes:
+
+        - ``"shared"`` (default): all probes share one agent session —
+          probe N sees probes 1..N-1's exchange in history. Cheap
+          (system prompt amortized) but minor in-context leak.
+        - ``"fresh"``: each probe (except the first) ends the current
+          agent session and starts a new one. The probe answers from
+          ``W`` only — the cleanest SCROLL-purity test. More LLM
+          cost (re-warmed system prompt per probe) and agents'
+          ``end_session`` / ``start_session`` subclass hooks fire
+          repeatedly, so they must be safe to call multiple times.
+
+        Only meaningful for envs whose ``get_end_of_task_probes``
+        returns ``len > 1`` — BEAM today (LME has a single probe,
+        so the mode is moot).
+        """
+        return "shared"
 
     def substrate_endgame_prompt(self) -> str:
         """Per-env "RUN STRUCTURE" section prepended to the agent's

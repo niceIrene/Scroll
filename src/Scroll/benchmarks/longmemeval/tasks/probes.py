@@ -47,7 +47,6 @@ __all__ = [
     "compose_user_postscript",
     "compute_efficiency_metrics",
     "get_probes_for_turn",
-    "get_probes_for_session",  # back-compat alias
     "set_active_probe",
 ]
 
@@ -117,10 +116,6 @@ def get_probes_for_turn(turn_idx: int) -> list[ProbeSpec]:
     if _active_probe is None or _active_probe.turn_idx != turn_idx:
         return []
     return [_active_probe]
-
-
-# Back-compat alias; drop in PR #6.
-get_probes_for_session = get_probes_for_turn
 
 
 def compute_efficiency_metrics(daily_action_logs: list[list[str]]) -> dict:

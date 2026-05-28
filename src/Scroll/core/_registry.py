@@ -71,14 +71,7 @@ def get_env(env_id: str) -> EnvEntry:
         except ImportError:
             reg_tools = _noop_register
 
-        # Accept either ``get_probes_for_turn`` (new) or
-        # ``get_probes_for_session`` (legacy, until each env's tasks
-        # module is migrated). Drop the legacy lookup in PR #6.
-        probes_fn = (
-            getattr(tasks, "get_probes_for_turn", None)
-            or getattr(tasks, "get_probes_for_session", None)
-            or (lambda turn_idx: [])
-        )
+        probes_fn = getattr(tasks, "get_probes_for_turn", lambda turn_idx: [])
         register_env(env_id, EnvEntry(
             env_cls=env_cls,
             datasource_cls=ds_cls,

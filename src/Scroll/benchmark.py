@@ -37,23 +37,17 @@ _tracer = otel_trace.get_tracer(__name__)
 def _append_turn_log(output_dir, turn_idx, ds_notes, actions, env_logs, snapshot):
     """Append one turn's full log record to session_logs.jsonl.
 
-    Filename kept as ``session_logs.jsonl`` for back-compat with
-    existing checkpoints; the record's primary index field is now
-    ``turn_idx`` (writes also include a legacy ``session_idx`` mirror
-    so old resume tooling continues to read the file).
+    Filename kept as ``session_logs.jsonl`` so existing run output
+    directories stay readable. The record's index field is ``turn_idx``.
     """
     path = Path(output_dir) / "session_logs.jsonl"
     snap = asdict(snapshot)
     # ``snap["turn_idx"]`` is redundant with the top-level field and ``logs``
-    # is already in ``env_logs``; drop both from the snapshot block. Also
-    # drop the legacy ``session_idx`` key if a subclass snapshot still
-    # carries it.
+    # is already in ``env_logs``; drop both from the snapshot block.
     snap.pop("turn_idx", None)
-    snap.pop("session_idx", None)
     snap.pop("logs", None)
     record = {
         "turn_idx": turn_idx,
-        "session_idx": turn_idx,  # legacy alias; drop in PR #6
         "datasource_notes": ds_notes,
         "agent_actions": actions,
         "env_logs": env_logs,
@@ -73,9 +67,7 @@ def _truncate_turn_log(output_dir, resume_turn):
         if not line.strip():
             continue
         entry = json.loads(line)
-        # Accept either ``turn_idx`` (new) or ``session_idx`` (legacy).
-        idx = entry.get("turn_idx", entry.get("session_idx", 0))
-        if idx <= resume_turn:
+        if entry["turn_idx"] <= resume_turn:
             kept.append(line)
     path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
 
@@ -191,8 +183,17 @@ def _run_task(
             # ``env.get_end_of_task_probes`` in PRs #4 / #5.
             eot_probes = env.get_end_of_task_probes()
             if eot_probes and is_llm:
+                # PR #6: ``env.probe_isolation()`` chooses between
+                # ``"shared"`` (all probes in one agent session, today's
+                # behavior — cheap) and ``"fresh"`` (each probe past
+                # the first ends the current session and starts a new
+                # one — SCROLL-purity test, more LLM cost).
+                isolation = env.probe_isolation()
                 with _tracer.start_as_current_span("end_of_task_probes"):
-                    for probe in eot_probes:
+                    for i, probe in enumerate(eot_probes):
+                        if isolation == "fresh" and i > 0:
+                            agent.end_session()
+                            agent.start_session()
                         result = inject_probe(agent, probe, snapshots, data)
                         probe_results.append(result)
         except KeyboardInterrupt:
@@ -206,8 +207,6 @@ def _run_task(
     return active_turns
 
 
-# Back-compat alias; drop in PR #6.
-_run_turn_loop = _run_task
 
 
 def run_single(
@@ -317,9 +316,7 @@ def _run_single_inner(
     if not fresh and output_dir:
         ckpt = load_checkpoint(output_dir, policy, seed, cfg_hash)
         if ckpt:
-            # Accept either ``turn_idx`` (new) or ``session_idx`` (legacy ckpts).
-            meta = ckpt["_meta"]
-            resume_turn = meta.get("turn_idx", meta.get("session_idx", 0))
+            resume_turn = ckpt["_meta"]["turn_idx"]
             print(f"  Resuming from checkpoint at turn {resume_turn}...")
 
             env = entry.env_cls.from_checkpoint(ckpt["env"], env_cfg)
@@ -334,12 +331,7 @@ def _run_single_inner(
             agent.from_checkpoint(ckpt["agent"])
 
             loop_state = ckpt.get("loop_state", {})
-            resume_active_turns = loop_state.get(
-                "active_turns",
-                loop_state.get(
-                    "active_sessions", loop_state.get("active_days", 0),
-                ),
-            )
+            resume_active_turns = loop_state.get("active_turns", 0)
             resumed = True
 
             # Truncate turn log to checkpoint turn to avoid duplicates on resume

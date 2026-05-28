@@ -89,19 +89,9 @@ class LongMemEvalEnvConfig:
 
     @classmethod
     def from_dict(cls, d: dict) -> "LongMemEvalEnvConfig":
-        """Construct from a raw config dict.
-
-        Accepts the legacy ``"days"`` / ``"num_sessions"`` keys as
-        synonyms for ``"num_turns"`` so older configs continue to parse.
-        """
+        """Construct from a raw config dict."""
         known = {f.name for f in fields(cls)}
-        normalized = dict(d)
-        if "num_turns" not in normalized:
-            if "num_sessions" in normalized:
-                normalized["num_turns"] = normalized.pop("num_sessions")
-            elif "days" in normalized:
-                normalized["num_turns"] = normalized["days"]
-        return cls(**{k: v for k, v in normalized.items() if k in known})
+        return cls(**{k: v for k, v in d.items() if k in known})
 
 
 _LME_SUBSTRATE_ENDGAME = """\

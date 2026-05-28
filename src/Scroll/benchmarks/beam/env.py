@@ -183,6 +183,10 @@ class BeamEnv(BaseEnvironment):
         from Scroll.benchmarks.beam.tasks import probes as _probes
         return list(_probes._active_probes)
 
+    def probe_isolation(self) -> str:
+        """Forwarded from :attr:`BeamEnvConfig.probe_isolation`."""
+        return str(getattr(self.cfg, "probe_isolation", "shared"))
+
     def substrate_endgame_prompt(self) -> str:
         return _BEAM_SUBSTRATE_ENDGAME
 

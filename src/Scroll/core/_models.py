@@ -137,14 +137,8 @@ class BaseEnvConfig:
 
     @classmethod
     def from_dict(cls, d: dict) -> "BaseEnvConfig":
-        # Back-compat: accept legacy ``num_sessions`` key from older configs.
-        # PR #2 of the loop redesign renamed the substrate concept from
-        # ``session`` to ``turn``. PR #6 drops this alias.
-        normalized = dict(d)
-        if "num_turns" not in normalized and "num_sessions" in normalized:
-            normalized["num_turns"] = normalized.pop("num_sessions")
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in normalized.items() if k in known})
+        return cls(**{k: v for k, v in d.items() if k in known})
 
 
 @dataclass
@@ -243,23 +237,13 @@ class Event:
 
 @dataclass
 class TurnResult:
-    """Results from stepping the environment forward one turn.
-
-    Previously ``SessionResult`` — renamed in PR #2 of the loop redesign
-    to match the new vocabulary (turn = one env-time-slice; session =
-    one agent-instance lifetime).
-    """
+    """Results from stepping the environment forward one turn."""
 
     turn_idx: int
     sold_units: int
     revenue: float
     machine_cash: float
     cash: float
-
-
-# Back-compat alias — callers that still import ``SessionResult`` get
-# the renamed class. Drop in PR #6.
-SessionResult = TurnResult
 
 
 @dataclass

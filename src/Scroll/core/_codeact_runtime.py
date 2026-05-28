@@ -42,10 +42,6 @@ class EndOfTurn(Exception):
     """
 
 
-# Back-compat alias for any external caller still importing the old name.
-EndOfSession = EndOfTurn
-
-
 @dataclass
 class CellResult:
     """Output of a single ``execute_cell`` call."""
@@ -57,23 +53,6 @@ class CellResult:
     turn_ended: bool = False
     # Bookkeeping (not surfaced to the agent — for tracing):
     code_chars: int = 0
-
-    # Back-compat properties for callers that still read the old names.
-    @property
-    def session_ended(self) -> bool:
-        return self.turn_ended
-
-    @session_ended.setter
-    def session_ended(self, value: bool) -> None:
-        self.turn_ended = bool(value)
-
-    @property
-    def day_ended(self) -> bool:
-        return self.turn_ended
-
-    @day_ended.setter
-    def day_ended(self, value: bool) -> None:
-        self.turn_ended = bool(value)
 
     def to_user_message(self) -> str:
         """Render this result as the next user-turn content for the LM.
@@ -379,5 +358,4 @@ __all__ = [
     "CellResult",
     "CellRuntime",
     "EndOfTurn",
-    "EndOfSession",  # back-compat alias
 ]

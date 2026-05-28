@@ -48,18 +48,16 @@ class BeamEnvConfig:
     # Dropped in PR #6 once parity is validated.
     agent_during_ingestion: bool = False
 
+    # PR #6: how the M end-of-task probes are isolated from each other.
+    # ``"shared"`` (default): all probes share one agent session — probe N
+    # sees probes 1..N-1's exchange in ``_history``. Cheap, matches
+    # today's behavior. ``"fresh"``: each probe (except the first) gets
+    # a fresh agent session — answers come purely from ``W``. See
+    # :meth:`BaseEnvironment.probe_isolation` for the full contract.
+    probe_isolation: str = "shared"
+
     @classmethod
     def from_dict(cls, d: dict) -> "BeamEnvConfig":
-        """Construct from a raw config dict.
-
-        Accepts legacy ``"days"`` / ``"num_sessions"`` keys as synonyms
-        for ``"num_turns"`` so older configs continue to parse.
-        """
+        """Construct from a raw config dict."""
         known = {f.name for f in fields(cls)}
-        normalized = dict(d)
-        if "num_turns" not in normalized:
-            if "num_sessions" in normalized:
-                normalized["num_turns"] = normalized.pop("num_sessions")
-            elif "days" in normalized:
-                normalized["num_turns"] = normalized["days"]
-        return cls(**{k: v for k, v in normalized.items() if k in known})
+        return cls(**{k: v for k, v in d.items() if k in known})

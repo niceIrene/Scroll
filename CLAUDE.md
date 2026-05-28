@@ -93,7 +93,7 @@ Plus the standard `CodeActAgent` overrides: `turn_prompt`, `sys_prompt`, `namesp
 
 ## Task / session / turn vocabulary
 
-Three nesting levels, all named consistently in the code (renamed in PR #2 of the loop redesign; old names — `run_session`, `step_session`, `num_sessions`, `SessionResult`, `LogEntry.session_idx`, `BaseEnvironment.session_idx`, `get_probes_for_session`, etc. — are kept as back-compat aliases that drop in PR #6):
+Three nesting levels, all named consistently in the code (renamed in PR #2 of the loop redesign). The internal back-compat aliases (`SessionResult`, `EndOfSession`, `ToolState._session_ended` / `reset_session` / `reset_day`, `CodeActAgent.session_ended` / `_on_session_end_async`, `CellResult.session_ended` / `day_ended`, `get_probes_for_session`, `_run_turn_loop`, the env `from_dict` `num_sessions` / `days` keys, the JSONL `session_idx` mirror in `session_logs.jsonl`, the checkpoint `meta.session_idx` mirror, the legacy checkpoint `active_sessions` resume key) were dropped in PR #6. The agent-facing aliases — `LogEntry.session_idx` property, `LogEntry.make(session_idx=...)` kwarg, `LogEntry.from_dict` legacy `session_idx` JSONL key, and `LogHandle.slice(session_idx=...)` parameter — are retained because they are spelled in agent prompts and REPL contracts:
 
 - **Task** — one Scroll run, one `run_single` invocation (one LME QA, one Vending sim, one BEAM chat). One persisted `E`, one derived `W`.
 - **Session** — one agent-instance lifetime. Crossing this boundary = spawn a new `Agent(...)`; in-context history is wiped; only persisted `E` / `W` survive. Today every env runs as exactly **one** session per task. The substrate API for that boundary is `start_session` / `end_session` (added in PR #3).
@@ -137,6 +137,8 @@ Two entry points:
 **Task shape** (PR #4 of loop redesign): under the default `simulation.agent_during_ingestion=false`, an LME task is `env.ingest_all(log)` (bulk-writes all ~50 historical chat sessions into `E` in one shot) → `num_turns=0` (per-turn loop skipped) → `env.get_end_of_task_probes()` fires the single QA probe. Set `simulation.agent_during_ingestion=true` to fall back to the legacy per-turn ingestion path (`num_turns = total_sessions + 1`, agent's `run_turn` mirrors one chat session per iteration, probe on the `+1` turn) — useful if the new path regresses on a particular config; PR #6 drops the flag once the production sweep validates parity.
 
 BEAM has the same shape (PR #5 of loop redesign): default `simulation.agent_during_ingestion=false`, `env.ingest_all(log)` bulk-writes every batch into `E`, all M probing questions fire end-of-task via `env.get_end_of_task_probes()`. Set `simulation.agent_during_ingestion=true` for the legacy `num_batches + 1` path.
+
+BEAM also accepts `simulation.probe_isolation` (PR #6, default `"shared"`): with `"shared"` all M probes run in one agent session (probe N sees probes 1..N-1's exchange in history — cheap, today's behavior); with `"fresh"` each probe past the first ends the current session and starts a new one so the answer comes purely from `W` — the SCROLL-purity test, but more LLM cost. Subclass agents that override `start_session` / `end_session` must be safe to call repeatedly under `"fresh"`.
 
 Output for the orchestrator lands under
 `output/longmemeval/<policy>_<seed>_<hash8>/qa_<question_id>/` (per QA) plus

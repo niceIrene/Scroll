@@ -23,14 +23,10 @@ from Scroll.core._models import (
     AgentConfig,
     BaseEnvConfig,
     TurnResult,
-    SessionResult,  # back-compat alias for TurnResult
     Event,
     LogEntry,
     RunStats,
 )
-
-# Back-compat alias — older code may still import ``DayResult``.
-DayResult = TurnResult
 from Scroll.core._evaluation import EnvSnapshot, ProbeResult, ProbeSpec
 from Scroll.core._environment import BaseEnvironment, BaseDataSource
 from Scroll.core._agent import BaseAgent
@@ -54,8 +50,6 @@ __all__ = [
     "AgentConfig",
     "BaseEnvConfig",
     "TurnResult",
-    "SessionResult",  # back-compat alias
-    "DayResult",  # back-compat alias
     "Event",
     "LogEntry",
     "RunStats",

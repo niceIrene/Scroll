@@ -211,10 +211,6 @@ def get_probes_for_turn(turn_idx: int) -> list[ProbeSpec]:
     return list(_active_probes)
 
 
-# Back-compat alias; drop in PR #6.
-get_probes_for_session = get_probes_for_turn
-
-
 def compute_efficiency_metrics(daily_action_logs: list[list[str]]) -> dict:
     """BEAM has no action-cost metrics — the agent runs passively."""
     return {}

@@ -321,7 +321,7 @@ def inject_probe(
         })
 
         return ProbeResult(
-            session_idx=probe.session_idx,
+            turn_idx=probe.turn_idx,
             question_id=probe.question_id,
             question=probe.question,
             agent_answer=agent_answer,

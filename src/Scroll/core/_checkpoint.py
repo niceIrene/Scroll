@@ -44,10 +44,8 @@ def save_checkpoint(
 ) -> None:
     """Save a checkpoint after a completed turn.
 
-    On-disk layout keeps the legacy ``session_NNN`` directory names
-    so existing checkpoint trees stay readable across the PR #2
-    rename. ``meta`` records both ``turn_idx`` (new) and
-    ``session_idx`` (back-compat alias).
+    On-disk layout keeps the ``session_NNN`` directory names so
+    existing checkpoint trees stay readable across the PR #2 rename.
     """
     base = Path(output_dir) / "checkpoints"
     turn_dir = base / f"session_{turn_idx:03d}"
@@ -69,7 +67,6 @@ def save_checkpoint(
         "version": 1,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "turn_idx": turn_idx,
-        "session_idx": turn_idx,  # legacy alias; drop in PR #6
         "policy": policy,
         "seed": seed,
         "config_hash": cfg_hash,
