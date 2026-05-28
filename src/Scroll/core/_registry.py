@@ -21,7 +21,7 @@ class EnvEntry(NamedTuple):
     datasource_cls: type
     register_tools: Callable
     probes: list
-    get_probes_for_session: Callable
+    get_probes_for_turn: Callable
     compute_efficiency_metrics: Callable
     create_agent: Callable
     parse_env_config: Callable
@@ -71,14 +71,20 @@ def get_env(env_id: str) -> EnvEntry:
         except ImportError:
             reg_tools = _noop_register
 
+        # Accept either ``get_probes_for_turn`` (new) or
+        # ``get_probes_for_session`` (legacy, until each env's tasks
+        # module is migrated). Drop the legacy lookup in PR #6.
+        probes_fn = (
+            getattr(tasks, "get_probes_for_turn", None)
+            or getattr(tasks, "get_probes_for_session", None)
+            or (lambda turn_idx: [])
+        )
         register_env(env_id, EnvEntry(
             env_cls=env_cls,
             datasource_cls=ds_cls,
             register_tools=reg_tools,
             probes=getattr(tasks, "PROBES", []),
-            get_probes_for_session=getattr(
-                tasks, "get_probes_for_session", lambda session_idx: [],
-            ),
+            get_probes_for_turn=probes_fn,
             compute_efficiency_metrics=getattr(tasks, "compute_efficiency_metrics", lambda x: {}),
             create_agent=create_agent,
             parse_env_config=parse_env_config,

@@ -19,10 +19,18 @@ Design symbol ↔ code map:
 The formal symbols stay in docs/design; Python identifiers are idiomatic.
 """
 
-from Scroll.core._models import AgentConfig, BaseEnvConfig, SessionResult, Event, LogEntry, RunStats
+from Scroll.core._models import (
+    AgentConfig,
+    BaseEnvConfig,
+    TurnResult,
+    SessionResult,  # back-compat alias for TurnResult
+    Event,
+    LogEntry,
+    RunStats,
+)
 
 # Back-compat alias — older code may still import ``DayResult``.
-DayResult = SessionResult
+DayResult = TurnResult
 from Scroll.core._evaluation import EnvSnapshot, ProbeResult, ProbeSpec
 from Scroll.core._environment import BaseEnvironment, BaseDataSource
 from Scroll.core._agent import BaseAgent
@@ -45,7 +53,8 @@ __all__ = [
     # models
     "AgentConfig",
     "BaseEnvConfig",
-    "SessionResult",
+    "TurnResult",
+    "SessionResult",  # back-compat alias
     "DayResult",  # back-compat alias
     "Event",
     "LogEntry",

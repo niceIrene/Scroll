@@ -32,7 +32,7 @@ This module colocates two distinct concerns:
 
 2. **Runtime adapter** — ``LongMemEvalDataSource``.
 
-   Wraps :meth:`LongMemEvalEnv.begin_session` for the SCROLL harness
+   Wraps :meth:`LongMemEvalEnv.begin_turn` for the SCROLL harness
    so the session loop can drive the env each turn.
 """
 
@@ -167,18 +167,18 @@ def select_item(
 
 
 class LongMemEvalDataSource(BaseDataSource):
-    """Wraps :meth:`LongMemEvalEnv.begin_session` for the SCROLL harness."""
+    """Wraps :meth:`LongMemEvalEnv.begin_turn` for the SCROLL harness."""
 
     def __init__(self, seed: int, data_cfg: dict | None = None) -> None:
         self.seed = seed
         self.cfg = data_cfg or {}
 
-    def begin_session(self, session_idx: int, env) -> list[str]:
-        # Drives env.begin_session so the env can stage the current
-        # session before agent.run_session spins up. Notes returned
-        # here are prepended to the agent's session prompt under
+    def begin_turn(self, turn_idx: int, env) -> list[str]:
+        # Drives env.begin_turn so the env can stage the current
+        # chat session before agent.run_turn spins up. Notes returned
+        # here are prepended to the agent's turn prompt under
         # "Today's briefing".
-        return env.begin_session(session_idx)
+        return env.begin_turn(turn_idx)
 
     def to_checkpoint(self) -> dict:
         return {"seed": self.seed}

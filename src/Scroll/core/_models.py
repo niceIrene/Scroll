@@ -128,17 +128,23 @@ class BaseEnvConfig:
     """Cross-environment simulation config.
 
     Every env's own ``EnvConfig`` should expose at least these fields.
-    The benchmark loop only reads ``num_sessions``; subclass / wrapper
+    The benchmark loop only reads ``num_turns``; subclass / wrapper
     dataclasses add env-specific knobs (vending: machine_slots,
     lead_time_days; future envs: max_turns, domain, etc.).
     """
 
-    num_sessions: int = 30
+    num_turns: int = 30
 
     @classmethod
     def from_dict(cls, d: dict) -> "BaseEnvConfig":
+        # Back-compat: accept legacy ``num_sessions`` key from older configs.
+        # PR #2 of the loop redesign renamed the substrate concept from
+        # ``session`` to ``turn``. PR #6 drops this alias.
+        normalized = dict(d)
+        if "num_turns" not in normalized and "num_sessions" in normalized:
+            normalized["num_turns"] = normalized.pop("num_sessions")
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in known})
+        return cls(**{k: v for k, v in normalized.items() if k in known})
 
 
 @dataclass
@@ -230,27 +236,37 @@ class AgentConfig:
 class Event:
     """A timestamped event in the simulation."""
 
-    session_idx: int
+    turn_idx: int
     kind: str
     text: str
 
 
 @dataclass
-class SessionResult:
-    """Results from stepping the environment forward one session."""
+class TurnResult:
+    """Results from stepping the environment forward one turn.
 
-    session_idx: int
+    Previously ``SessionResult`` — renamed in PR #2 of the loop redesign
+    to match the new vocabulary (turn = one env-time-slice; session =
+    one agent-instance lifetime).
+    """
+
+    turn_idx: int
     sold_units: int
     revenue: float
     machine_cash: float
     cash: float
 
 
+# Back-compat alias — callers that still import ``SessionResult`` get
+# the renamed class. Drop in PR #6.
+SessionResult = TurnResult
+
+
 @dataclass
 class RunStats:
     """Aggregate results from a single benchmark run.
 
-    Only ``strategy`` / ``seed`` / ``active_sessions`` / ``probe_avg_score``
+    Only ``strategy`` / ``seed`` / ``active_turns`` / ``probe_avg_score``
     / ``efficiency`` are env-agnostic. Env-specific headline metrics
     (vending's ``net_worth`` / ``units_sold`` / ``bankrupt``) live in
     ``env_metrics``, populated by :meth:`BaseEnvironment.report_run_metrics`.
@@ -258,7 +274,7 @@ class RunStats:
 
     strategy: str
     seed: int
-    active_sessions: int = 0
+    active_turns: int = 0
     probe_avg_score: float = 0.0
     efficiency: dict = field(default_factory=dict)
     env_metrics: dict = field(default_factory=dict)

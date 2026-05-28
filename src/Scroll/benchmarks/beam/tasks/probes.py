@@ -181,14 +181,18 @@ def set_active_item(item: BeamItem, cfg: BeamEnvConfig) -> None:
 PROBES: list[ProbeSpec] = []  # populated per-run via set_active_item
 
 
-def get_probes_for_session(session_idx: int) -> list[ProbeSpec]:
-    """All probes fire on the probe day (= num_batches + 1)."""
+def get_probes_for_turn(turn_idx: int) -> list[ProbeSpec]:
+    """All probes fire on the probe turn (= num_batches + 1)."""
     if not _active_probes:
         return []
-    probe_session = _active_probes[0].session_idx
-    if session_idx != probe_session:
+    probe_turn = _active_probes[0].turn_idx
+    if turn_idx != probe_turn:
         return []
     return list(_active_probes)
+
+
+# Back-compat alias; drop in PR #6.
+get_probes_for_session = get_probes_for_turn
 
 
 def compute_efficiency_metrics(daily_action_logs: list[list[str]]) -> dict:
@@ -229,7 +233,7 @@ def _build_probe(item: BeamItem, pq: BeamProbingQuestion, cfg: BeamEnvConfig) ->
             judge_cfg=judge_cfg,
         )
 
-    # Build the prompt with category + question text. The probe day is
+    # Build the prompt with category + question text. The probe turn is
     # num_batches + 1 (same shape as LongMemEval).
     nudge = _CATEGORY_POSTSCRIPT.get(pq.category, "")
     question_text = (
@@ -242,7 +246,7 @@ def _build_probe(item: BeamItem, pq: BeamProbingQuestion, cfg: BeamEnvConfig) ->
 
     return ProbeSpec(
         question_id=qid,
-        session_idx=item.num_batches + 1,
+        turn_idx=item.num_batches + 1,
         question=question_text,
         ground_truth_fn=gt_fn,
         scoring_fn=scoring_fn,

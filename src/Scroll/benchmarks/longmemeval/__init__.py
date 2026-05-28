@@ -1,8 +1,8 @@
 """LongMemEval environment package — long-horizon chat-memory benchmark.
 
-Each "run" answers one LongMemEval QA item. Each session in the
-session-loop delivers one chat session from the item's haystack via
-:meth:`LongMemEvalDataSource.begin_session`. After every haystack session
+Each "run" answers one LongMemEval QA item. Each turn in the
+turn-loop delivers one chat session from the item's haystack via
+:meth:`LongMemEvalDataSource.begin_turn`. After every haystack session
 has been streamed, a single end-of-history probe fires asking the
 question; the agent's free-text reply is scored by an LLM judge.
 """

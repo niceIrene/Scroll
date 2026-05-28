@@ -3,7 +3,7 @@
 The agent writes Python code in fenced ```python``` blocks; the runtime
 compiles each cell with ``PyCF_ALLOW_TOP_LEVEL_AWAIT`` so async tools
 (``rlm``, async tool calls) can be awaited at top level.
-Variables persist in ``self.globals`` across cells within a session.
+Variables persist in ``self.globals`` across cells within a turn.
 
 Design note: this is the "Algorithm 1" substrate from the RLM paper
 (Zhang/Kraska/Khattab 2026). The conversation log E is loaded into
@@ -31,15 +31,19 @@ from dataclasses import dataclass, field
 _PyCF_ALLOW_TOP_LEVEL_AWAIT = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
 
 
-class EndOfSession(Exception):
-    """Raised from inside the REPL to end the current session early.
+class EndOfTurn(Exception):
+    """Raised from inside the REPL to end the current turn early.
 
     The runtime catches it inside ``execute_cell`` and surfaces a
-    ``CellResult(session_ended=True)`` instead of treating it as an error.
+    ``CellResult(turn_ended=True)`` instead of treating it as an error.
     Kept as a defensive primitive — the REPL does not bind any helper
-    that raises it; the session-loop's documented termination signal is
+    that raises it; the turn-loop's documented termination signal is
     "emit a response with no code block" (see ``CodeActAgent``).
     """
+
+
+# Back-compat alias for any external caller still importing the old name.
+EndOfSession = EndOfTurn
 
 
 @dataclass
@@ -50,18 +54,26 @@ class CellResult:
     stderr: str = ""
     exception: str | None = None  # formatted traceback string
     exc: BaseException | None = None  # original exception object, for span.record_exception()
-    session_ended: bool = False
+    turn_ended: bool = False
     # Bookkeeping (not surfaced to the agent — for tracing):
     code_chars: int = 0
 
-    # Back-compat property for callers that still read ``day_ended``.
+    # Back-compat properties for callers that still read the old names.
+    @property
+    def session_ended(self) -> bool:
+        return self.turn_ended
+
+    @session_ended.setter
+    def session_ended(self, value: bool) -> None:
+        self.turn_ended = bool(value)
+
     @property
     def day_ended(self) -> bool:
-        return self.session_ended
+        return self.turn_ended
 
     @day_ended.setter
     def day_ended(self, value: bool) -> None:
-        self.session_ended = bool(value)
+        self.turn_ended = bool(value)
 
     def to_user_message(self) -> str:
         """Render this result as the next user-turn content for the LM.
@@ -78,8 +90,8 @@ class CellResult:
             parts.append("[stderr]\n" + _truncate(self.stderr.rstrip(), 1000, label="stderr"))
         if self.exception:
             parts.append("[exception]\n" + _truncate(self.exception.rstrip(), 1500, label="exception"))
-        if self.session_ended:
-            parts.append("[session ended]")
+        if self.turn_ended:
+            parts.append("[turn ended]")
         if not parts:
             parts.append("(no output)")
         return "\n\n".join(parts)
@@ -116,8 +128,8 @@ class CellRuntime:
     """A persistent async-aware Python REPL.
 
     One ``CellRuntime`` per agent. Globals survive across ``execute_cell``
-    calls; reset by re-creating the runtime (e.g. at session boundaries
-    when ``clear_namespace_each_session=True``).
+    calls; reset by re-creating the runtime (e.g. at turn boundaries
+    when ``clear_namespace_each_turn=True``).
 
     The runtime does NOT sandbox — agent-emitted code runs with full
     Python privileges in the current process, same trust model as
@@ -135,7 +147,7 @@ class CellRuntime:
         self.globals.update(kwargs)
 
     def reset(self, initial_globals: dict | None = None) -> None:
-        """Wipe per-session state; re-bind the namespace from a fresh dict.
+        """Wipe per-turn state; re-bind the namespace from a fresh dict.
 
         Persistent state objects (``log``, ``memoryspace``, ``rlm``)
         that the caller wants to survive must be re-passed in
@@ -148,8 +160,8 @@ class CellRuntime:
     async def execute_cell(self, code: str) -> CellResult:
         """Compile and run ``code`` in the persistent namespace.
 
-        Awaits top-level awaits if any. Catches ``EndOfSession`` and
-        surfaces it as ``session_ended=True``. Other exceptions are
+        Awaits top-level awaits if any. Catches ``EndOfTurn`` and
+        surfaces it as ``turn_ended=True``. Other exceptions are
         captured into ``result.exception`` as a formatted traceback so
         the agent can read what went wrong on its next turn.
 
@@ -187,8 +199,8 @@ class CellRuntime:
                         await coro
                 else:
                     exec(compiled, self.globals)
-            except EndOfSession:
-                result.session_ended = True
+            except EndOfTurn:
+                result.turn_ended = True
             except Exception as exc:
                 # Strip the runtime's own frames from the traceback so
                 # the agent sees just its code's frames — same shape as
@@ -366,5 +378,6 @@ def _format_namespace_hint(
 __all__ = [
     "CellResult",
     "CellRuntime",
-    "EndOfSession",
+    "EndOfTurn",
+    "EndOfSession",  # back-compat alias
 ]

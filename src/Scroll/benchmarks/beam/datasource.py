@@ -2,7 +2,7 @@
 
 The batch content (turns) is delivered to ``BeamAgent`` via the
 unified ``log`` handle (auto-ingested into memoryspace tables before
-the probe session). The email + search channels inherit the
+the probe turn). The email + search channels inherit the
 BaseDataSource defaults (no-op).
 """
 
@@ -16,8 +16,8 @@ class BeamDataSource(BaseDataSource):
         self.seed = seed
         self.cfg = data_cfg or {}
 
-    def begin_session(self, session_idx: int, env) -> list[str]:
-        return env.begin_session(session_idx)
+    def begin_turn(self, turn_idx: int, env) -> list[str]:
+        return env.begin_turn(turn_idx)
 
     def to_checkpoint(self) -> dict:
         return {"seed": self.seed}

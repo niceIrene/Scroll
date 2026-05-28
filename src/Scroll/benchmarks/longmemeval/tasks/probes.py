@@ -10,8 +10,8 @@ the score for one probe is a single network call wrapped by
 
 The active item / config pair is registered per-run via
 :func:`set_active_probe` (called from
-:meth:`LongMemEvalEnv.__init__`); ``get_probes_for_session`` returns
-the probe only on the final session. Single-process re-runs are safe because
+:meth:`LongMemEvalEnv.__init__`); ``get_probes_for_turn`` returns
+the probe only on the final turn. Single-process re-runs are safe because
 each :func:`run_single` constructs a fresh env, which overwrites the
 active probe.
 """
@@ -46,7 +46,8 @@ __all__ = [
     "active_question_type",
     "compose_user_postscript",
     "compute_efficiency_metrics",
-    "get_probes_for_session",
+    "get_probes_for_turn",
+    "get_probes_for_session",  # back-compat alias
     "set_active_probe",
 ]
 
@@ -97,14 +98,18 @@ def set_active_probe(item: LongMemEvalItem, cfg: LongMemEvalEnvConfig) -> None:
 PROBES: list[ProbeSpec] = []  # filled per-run via set_active_probe
 
 
-def get_probes_for_session(session_idx: int) -> list[ProbeSpec]:
-    if _active_probe is None or _active_probe.session_idx != session_idx:
+def get_probes_for_turn(turn_idx: int) -> list[ProbeSpec]:
+    if _active_probe is None or _active_probe.turn_idx != turn_idx:
         return []
     return [_active_probe]
 
 
+# Back-compat alias; drop in PR #6.
+get_probes_for_session = get_probes_for_turn
+
+
 def compute_efficiency_metrics(daily_action_logs: list[list[str]]) -> dict:
-    """Per-session action stats. LME has no env actions (the agent only
+    """Per-turn action stats. LME has no env actions (the agent only
     acts at probe time), so ``avg_actions_per_day`` is always 0; we
     keep ``total_days`` for run-shape sanity. Token / LM-call cost is
     added downstream by ``benchmark.py`` from ``self._tool_state``.
@@ -162,12 +167,13 @@ def _build_probe(item: LongMemEvalItem, cfg: LongMemEvalEnvConfig) -> ProbeSpec:
 
     return ProbeSpec(
         question_id=qid,
-        # Probe fires on the dedicated probe-only session = total_sessions+1
-        # (one iteration past the last haystack session). The probe
-        # session's run_session exposes "no session today" so the agent's
-        # session-loop history at probe time isn't dominated by the last
-        # ingest's transcript.
-        session_idx=item.total_sessions + 1,
+        # Probe fires on the dedicated probe-only turn = total_sessions+1
+        # (one iteration past the last haystack chat session). The probe
+        # turn's run_turn exposes "no chat session today" so the agent's
+        # turn-loop history at probe time isn't dominated by the last
+        # ingest's transcript. PR #4 retires this trick in favor of an
+        # end-of-task probe path.
+        turn_idx=item.total_sessions + 1,
         question=question_text,
         ground_truth_fn=gt_fn,
         scoring_fn=scoring_fn,

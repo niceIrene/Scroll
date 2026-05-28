@@ -46,7 +46,7 @@ from Scroll.core._codeact_agent import EXECUTE_PYTHON_TOOL_NAME
 from Scroll.tools.chat_memory import (
     handle_only_body,
     make_time_range_extractor,
-    probe_session_body,
+    probe_turn_body,
 )
 from Scroll.tools.chat_memory import (
     make_chat_memory_namespace,
@@ -219,11 +219,11 @@ class LongMemEvalAgent(ScrollAgent):
     # don't override ``namespace_docs()`` — the base class returns "" and
     # ``_probe_sys_prompt`` simply skips it.
 
-    def session_prompt(self, session_idx: int) -> str:
+    def turn_prompt(self, turn_idx: int) -> str:
         # Auto-advance: agent only acts at probe time.
         env = self._tool_state.env
         if not getattr(env, "current_session", None):
-            return probe_session_body(session_idx)
+            return probe_turn_body(turn_idx)
         return handle_only_body()
 
     def _latest_session_iso(self) -> str | None:
@@ -394,7 +394,7 @@ class LongMemEvalAgent(ScrollAgent):
                 ops_label = ", ".join(ops) if ops else "no-ops"
                 line_count = code.count("\n") + 1
                 span_name = (
-                    f"probe_cell d{self._current_session}.i{it}.{idx} "
+                    f"probe_cell d{self._current_turn}.i{it}.{idx} "
                     f"({line_count}L) [{ops_label}]"
                 )
                 code_preview = code if len(code) <= 3000 else (
@@ -404,7 +404,7 @@ class LongMemEvalAgent(ScrollAgent):
                 with _tracer.start_as_current_span(span_name) as span:
                     span.set_attributes({
                         "tool.name": EXECUTE_PYTHON_TOOL_NAME,
-                        "cell.session": self._current_session,
+                        "cell.session": self._current_turn,
                         "cell.iter": it,
                         "cell.tool_idx": idx,
                         "cell.kind": "probe",
@@ -840,7 +840,7 @@ class LongMemEvalAgent(ScrollAgent):
         qid = getattr(probe, "question_id", "") if probe else ""
         qtype = self._resolve_qtype(probe) or "unknown"
         cells_count = self._count_probe_cells()
-        span_name = f"probe_distill d{self._current_session} qid={qid}"
+        span_name = f"probe_distill d{self._current_turn} qid={qid}"
         with _tracer.start_as_current_span(span_name) as span:
             span.set_attributes({
                 "openinference.span.kind": "CHAIN",
@@ -998,17 +998,17 @@ class LongMemEvalAgent(ScrollAgent):
 
     # ----- Auto-ingest -----
 
-    def run_session(self, env) -> list[str]:
+    def run_turn(self, env) -> list[str]:
         """Mirror the env's chat session into ``E``. The attached
         :class:`LMEIngestor` will catch up on the next ``ms`` read; we
-        trigger it eagerly here so any same-session probe sees fresh W.
+        trigger it eagerly here so any same-turn probe sees fresh W.
         """
-        write_chat_turn_entries(self.log, env, env.session_idx + 1)
+        write_chat_turn_entries(self.log, env, env.turn_idx + 1)
         try:
             self.memoryspace._maybe_catch_up()
         except Exception:  # noqa: BLE001
             _log.warning(
-                "LongMemEvalAgent ingest catch-up failed (session_idx=%s)",
-                env.session_idx + 1, exc_info=True,
+                "LongMemEvalAgent ingest catch-up failed (turn_idx=%s)",
+                env.turn_idx + 1, exc_info=True,
             )
         return []

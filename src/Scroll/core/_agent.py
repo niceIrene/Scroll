@@ -32,23 +32,23 @@ _log = logging.getLogger(__name__)
 class BaseAgent(ABC):
     """Interface that all benchmark agents must implement.
 
-    Every agent — heuristic or LLM-based — follows the same per-session
-    cycle: ``receive_context → run_session → receive_outcomes``.
+    Every agent — heuristic or LLM-based — follows the same per-turn
+    cycle: ``receive_context → run_turn → receive_outcomes``.
     """
 
     last_context: list[str]
 
     @abstractmethod
-    def run_session(self, env: BaseEnvironment) -> list[str]:
-        """Execute one simulation session. Returns a list of action log strings."""
+    def run_turn(self, env: BaseEnvironment) -> list[str]:
+        """Execute one simulation turn. Returns a list of action log strings."""
 
     @abstractmethod
-    def receive_outcomes(self, session_idx: int, logs: list[str]) -> None:
-        """Receive environment outcome logs after step_session."""
+    def receive_outcomes(self, turn_idx: int, logs: list[str]) -> None:
+        """Receive environment outcome logs after step_turn."""
 
     @abstractmethod
-    def receive_context(self, session_idx: int, notes: list[str]) -> None:
-        """Receive external data source notes at the start of a session."""
+    def receive_context(self, turn_idx: int, notes: list[str]) -> None:
+        """Receive external data source notes at the start of a turn."""
 
     @abstractmethod
     def answer_probe(self, question: str) -> str:
@@ -61,8 +61,8 @@ class BaseAgent(ABC):
 
     @property
     @abstractmethod
-    def session_ended(self) -> bool:
-        """Whether the agent has signaled end-of-session."""
+    def turn_ended(self) -> bool:
+        """Whether the agent has signaled end-of-turn."""
 
     def probe_user_hint(self, probe=None) -> str:
         """Strategy-specific reminder appended to the probe user message.

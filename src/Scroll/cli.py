@@ -250,7 +250,7 @@ def main() -> None:
                 )
                 print(
                     f"run policy={run.strategy:>16} seed={run.seed} "
-                    f"active_sessions={run.active_sessions:3d} "
+                    f"active_turns={run.active_turns:3d} "
                     f"probe_score={run.probe_avg_score:.3f}"
                     + (f" | {env_metric_str}" if env_metric_str else "")
                 )

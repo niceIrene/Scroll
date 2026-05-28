@@ -616,7 +616,7 @@ def _make_judge_scorer(qid: str, question: str, judge_cfg: dict) -> Callable[[st
 # ---------------------------------------------------------------------------
 # Probe definitions
 #
-# Static metadata table (qid, session_idx, question, gt_fn). The
+# Static metadata table (qid, turn_idx, question, gt_fn). The
 # scoring_fn is built per-probe at ``set_judge_config`` time so each
 # closure captures its own (qid, question, judge_cfg). The module-level
 # ``PROBES`` list starts empty and is populated when
@@ -625,7 +625,7 @@ def _make_judge_scorer(qid: str, question: str, judge_cfg: dict) -> Callable[[st
 
 
 _PROBE_META: list[tuple] = [
-    # (qid, session_idx, question, gt_fn)
+    # (qid, turn_idx, question, gt_fn)
     # Early phase (days 10-28): short-horizon recall + basic analysis
     ("A1", 10, "What was the total sales revenue for days 6 through 9?", _gt_a1),
     ("A2", 15, "Which SKU has sold the most units so far? If multiple SKUs are tied for the most, list every one of them with the unit count.", _gt_a2),
@@ -680,12 +680,16 @@ def set_judge_config(cfg) -> None:
         "api_base": cfg.judge_api_base,
     }
     PROBES.clear()
-    for qid, session_idx, question, gt_fn in _PROBE_META:
+    for qid, turn_idx, question, gt_fn in _PROBE_META:
         scoring_fn = _make_judge_scorer(qid, question, judge_cfg)
         PROBES.append(
-            ProbeSpec(qid, session_idx, question, gt_fn, scoring_fn)
+            ProbeSpec(qid, turn_idx, question, gt_fn, scoring_fn)
         )
 
 
-def get_probes_for_session(session_idx: int) -> list[ProbeSpec]:
-    return [p for p in PROBES if p.session_idx == session_idx]
+def get_probes_for_turn(turn_idx: int) -> list[ProbeSpec]:
+    return [p for p in PROBES if p.turn_idx == turn_idx]
+
+
+# Back-compat alias; drop in PR #6.
+get_probes_for_session = get_probes_for_turn

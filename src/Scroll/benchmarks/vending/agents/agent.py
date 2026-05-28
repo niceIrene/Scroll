@@ -112,22 +112,22 @@ class VendingAgent(ScrollAgent):
     # — the base class returns "" and the framework just concatenates
     # the empty string. Matches LongMemEvalAgent's setup.
 
-    def session_prompt(self, session_idx: int) -> str:
-        # Vending: session_idx maps 1:1 to the calendar day, so we pass
+    def turn_prompt(self, turn_idx: int) -> str:
+        # Vending: turn_idx maps 1:1 to the calendar day, so we pass
         # it as the `day` arg to the domain helper.
-        return vending_day_prompt(session_idx, self._tool_state.env)
+        return vending_day_prompt(turn_idx, self._tool_state.env)
 
-    def _emit_context_entries(self, session_idx: int, notes: list[str]) -> None:
+    def _emit_context_entries(self, turn_idx: int, notes: list[str]) -> None:
         """Land per-day briefing notes AND any new inbox mails into E.
 
-        Vending: framework session == calendar day (1:1). The ingestor
+        Vending: framework turn == calendar day (1:1). The ingestor
         will pick these up on the next ``ms`` read and write them into
         the seven canonical tables + vector store.
         """
         # Briefing notes — one entry per note.
         for note in notes:
             self.log.append(LogEntry.make(
-                turn_idx=session_idx, role="system",
+                turn_idx=turn_idx, role="system",
                 content=str(note),
                 metadata={"kind": "briefing_note"},
             ))
@@ -138,7 +138,7 @@ class VendingAgent(ScrollAgent):
             for idx in range(self._emitted_inbox_count, len(inbox_list)):
                 mail = inbox_list[idx]
                 self.log.append(LogEntry.make(
-                    turn_idx=session_idx, role="system",
+                    turn_idx=turn_idx, role="system",
                     content=f"from={getattr(mail, 'source', None)} "
                             f"subject={getattr(mail, 'subject', '')}",
                     metadata={
@@ -148,19 +148,19 @@ class VendingAgent(ScrollAgent):
                 ))
             self._emitted_inbox_count = len(inbox_list)
 
-    def _emit_outcome_entries(self, session_idx: int, logs: list[str]) -> None:
+    def _emit_outcome_entries(self, turn_idx: int, logs: list[str]) -> None:
         """Land per-day env outcome lines AND a single env snapshot into E."""
         for line in logs:
             self.log.append(LogEntry.make(
-                turn_idx=session_idx, role="system",
+                turn_idx=turn_idx, role="system",
                 content=str(line),
                 metadata={"kind": "env_log"},
             ))
         env = self._tool_state.env
         if env is not None:
             self.log.append(LogEntry.make(
-                turn_idx=session_idx, role="system",
-                content=f"env_snapshot day={session_idx}",
+                turn_idx=turn_idx, role="system",
+                content=f"env_snapshot day={turn_idx}",
                 metadata={
                     "kind": "env_snapshot",
                     **serialize_env_snapshot(env),

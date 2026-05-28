@@ -163,7 +163,7 @@ def _ingest_supplier_prices_from_mail(
 class VendingIngestor(Ingestor):
     """E → W for the vending env.
 
-    Buffers entries per (kind, session_idx) so the existing
+    Buffers entries per (kind, turn_idx) so the existing
     boundary-shaped helpers in :mod:`auto_ingest` keep working
     unchanged (they're written to take ``day`` + ``list[str]``).
     """
@@ -172,7 +172,7 @@ class VendingIngestor(Ingestor):
         self.ms = ms
 
     def consume(self, entries: Iterable[LogEntry]) -> None:
-        # Group by (session_idx, kind) so we can re-use the
+        # Group by (turn_idx, kind) so we can re-use the
         # existing day-shaped helpers (ingest_sales, ingest_deliveries,
         # ingest_context_notes) which expect a list per day.
         ctx_notes: dict[int, list[str]] = {}

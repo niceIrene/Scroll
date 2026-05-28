@@ -144,6 +144,12 @@ class ScrollAgent(CodeActAgent):
         ``receive_context`` time (inbox mail, calendar context, ...)
       - :meth:`_emit_outcome_entries` — extra env data → ``E`` at
         ``receive_outcomes`` time (env snapshot, batch metadata, ...)
+
+    Renamed in PR #2 of the loop redesign: ``session`` → ``turn`` for
+    the substrate concepts. The agent base now exposes ``run_turn`` /
+    ``receive_context(turn_idx, ...)`` / ``receive_outcomes(turn_idx,
+    ...)``. Hook overrides (``_emit_*_entries(turn_idx, ...)``) renamed
+    accordingly.
       - :meth:`_base_namespace` — env-specific tool closures
       - :meth:`extra_namespace` — extra REPL globals beyond
         ``log`` / ``ms`` / ``rlm``
@@ -188,7 +194,7 @@ class ScrollAgent(CodeActAgent):
         if self.ingestor_cls is not None:
             self.memoryspace.attach(self.log, self.ingestor_cls(self.memoryspace))
 
-    def receive_context(self, session_idx: int, notes: list[str]) -> None:
+    def receive_context(self, turn_idx: int, notes: list[str]) -> None:
         """Append briefing notes to E and let the ingestor catch up.
 
         Subclasses that need to land extra env-side data into E (Vending's
@@ -196,7 +202,7 @@ class ScrollAgent(CodeActAgent):
         :meth:`_emit_context_entries` rather than this method — the
         framework guarantees the ingestor catches up afterwards.
         """
-        self._emit_context_entries(session_idx, notes)
+        self._emit_context_entries(turn_idx, notes)
         # Force a catch-up here so the post-receive_context state of W
         # reflects the just-appended entries, even if no ms read fires
         # before the next phase.
@@ -204,22 +210,22 @@ class ScrollAgent(CodeActAgent):
             self.memoryspace._maybe_catch_up()
         except Exception:  # noqa: BLE001
             _log.warning(
-                "%s ingest catch-up failed (session_idx=%s)",
-                type(self).__name__, session_idx, exc_info=True,
+                "%s ingest catch-up failed (turn_idx=%s)",
+                type(self).__name__, turn_idx, exc_info=True,
             )
-        super().receive_context(session_idx, notes)
+        super().receive_context(turn_idx, notes)
 
-    def receive_outcomes(self, session_idx: int, logs: list[str]) -> None:
+    def receive_outcomes(self, turn_idx: int, logs: list[str]) -> None:
         """Append outcome logs to E and let the ingestor catch up."""
-        self._emit_outcome_entries(session_idx, logs)
+        self._emit_outcome_entries(turn_idx, logs)
         try:
             self.memoryspace._maybe_catch_up()
         except Exception:  # noqa: BLE001
             _log.warning(
-                "%s ingest catch-up failed (session_idx=%s)",
-                type(self).__name__, session_idx, exc_info=True,
+                "%s ingest catch-up failed (turn_idx=%s)",
+                type(self).__name__, turn_idx, exc_info=True,
             )
-        super().receive_outcomes(session_idx, logs)
+        super().receive_outcomes(turn_idx, logs)
 
     def to_checkpoint(self) -> dict:
         data = super().to_checkpoint()
@@ -247,7 +253,7 @@ class ScrollAgent(CodeActAgent):
             ns["rlm"] = make_dspy_rlm(
                 self.cfg,
                 log=self.log,
-                day_provider=lambda: self._current_session,
+                day_provider=lambda: self._current_turn,
             )
         ns.update(self.extra_namespace())
         return ns
@@ -264,7 +270,7 @@ class ScrollAgent(CodeActAgent):
         """
         return None
 
-    def _emit_context_entries(self, session_idx: int, notes: list[str]) -> None:
+    def _emit_context_entries(self, turn_idx: int, notes: list[str]) -> None:
         """Append env briefing data to ``E`` as one or more LogEntries.
 
         Default behavior: emit one ``kind="briefing_note"`` entry per
@@ -277,12 +283,12 @@ class ScrollAgent(CodeActAgent):
         from Scroll.core._models import LogEntry
         for note in notes:
             self.log.append(LogEntry.make(
-                turn_idx=session_idx, role="system",
+                turn_idx=turn_idx, role="system",
                 content=str(note),
                 metadata={"kind": "briefing_note"},
             ))
 
-    def _emit_outcome_entries(self, session_idx: int, logs: list[str]) -> None:
+    def _emit_outcome_entries(self, turn_idx: int, logs: list[str]) -> None:
         """Append env outcome data to ``E`` as one or more LogEntries.
 
         Default behavior: emit one ``kind="env_log"`` entry per log
@@ -292,7 +298,7 @@ class ScrollAgent(CodeActAgent):
         from Scroll.core._models import LogEntry
         for line in logs:
             self.log.append(LogEntry.make(
-                turn_idx=session_idx, role="system",
+                turn_idx=turn_idx, role="system",
                 content=str(line),
                 metadata={"kind": "env_log"},
             ))

@@ -1,7 +1,7 @@
 {
   "environment": "vending",
   "simulation": {
-    "num_sessions": 30,
+    "num_turns": 30,
     "start_cash": 500.0,
     "daily_fee": 2.0,
     "machine_slots": 12,

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, fields
 from Scroll.core import (
     BaseEnvironment,
     EnvSnapshot,
-    SessionResult,
+    TurnResult,
     serialize_rng,
     restore_rng,
 )
@@ -32,7 +32,7 @@ class Product:
 
 @dataclass
 class EnvConfig:
-    num_sessions: int                 # number of simulated business days
+    num_turns: int                    # number of simulated business days
     start_cash: float
     daily_fee: float
     machine_slots: int
@@ -51,13 +51,16 @@ class EnvConfig:
     def from_dict(cls, d: dict) -> EnvConfig:
         """Construct from a raw config dict, using dataclass defaults for missing keys.
 
-        Accepts the legacy ``"days"`` key as a synonym for ``"num_sessions"``
-        so older configs continue to parse.
+        Accepts the legacy ``"days"`` / ``"num_sessions"`` keys as
+        synonyms for ``"num_turns"`` so older configs continue to parse.
         """
         known = {f.name for f in fields(cls)}
         normalized = dict(d)
-        if "num_sessions" not in normalized and "days" in normalized:
-            normalized["num_sessions"] = normalized["days"]
+        if "num_turns" not in normalized:
+            if "num_sessions" in normalized:
+                normalized["num_turns"] = normalized.pop("num_sessions")
+            elif "days" in normalized:
+                normalized["num_turns"] = normalized["days"]
         return cls(**{k: v for k, v in normalized.items() if k in known})
 
 
@@ -74,9 +77,9 @@ class VendingSnapshot(EnvSnapshot):
 
     @property
     def day(self) -> int:
-        # Vending's domain vocabulary calls each session a "day"; the
-        # framework-level field is ``session_idx``. Probes read ``.day``.
-        return self.session_idx
+        # Vending's domain vocabulary calls each turn a "day"; the
+        # framework-level field is ``turn_idx``. Probes read ``.day``.
+        return self.turn_idx
 
 
 def default_catalog() -> list[Product]:
@@ -96,7 +99,7 @@ class VendingEnv(BaseEnvironment):
     def __init__(self, cfg: EnvConfig, seed: int) -> None:
         self.cfg = cfg
         self.rng = random.Random(seed)
-        self.session_idx = 0
+        self.turn_idx = 0
         self.cash = cfg.start_cash
         self.machine_cash = 0.0
         self.catalog = {p.sku: p for p in default_catalog()}
@@ -109,13 +112,13 @@ class VendingEnv(BaseEnvironment):
         self._last_revenue = 0.0
         self._last_sold_units = 0
         # Build the probe list with judge-config-bound scoring closures.
-        # The framework's :func:`get_probes_for_session` reads from
+        # The framework's :func:`get_probes_for_turn` reads from
         # ``tasks.probes.PROBES`` which starts empty at module load.
         from Scroll.benchmarks.vending.tasks.probes import set_judge_config
         set_judge_config(cfg)
 
     def visible_state(self) -> dict:
-        return {"session_idx": self.session_idx,
+        return {"turn_idx": self.turn_idx,
             "cash": round(self.cash, 2),
             "machine_cash": round(self.machine_cash, 2),
             "storage": dict(self.storage),
@@ -141,7 +144,7 @@ class VendingEnv(BaseEnvironment):
         if total_cost > self.cash:
             return f"order_rejected insufficient_cash need={total_cost:.2f} have={self.cash:.2f}"
         self.cash -= total_cost
-        arrive = self.session_idx + self.cfg.lead_time_days
+        arrive = self.turn_idx + self.cfg.lead_time_days
         self.pending_deliveries.append((arrive, cleaned, total_cost))
         return f"order_placed arrive_day={arrive} cost={total_cost:.2f}"
 
@@ -200,7 +203,7 @@ class VendingEnv(BaseEnvironment):
         delivered_logs = []
         next_pending = []
         for arrive_day, items, cost in self.pending_deliveries:
-            if arrive_day <= self.session_idx:
+            if arrive_day <= self.turn_idx:
                 for sku, qty in items.items():
                     self.storage[sku] += qty
                 delivered_logs.append(f"delivery_arrived items={items} booked_cost={cost:.2f}")
@@ -214,8 +217,8 @@ class VendingEnv(BaseEnvironment):
         revenue = 0.0
         logs = []
 
-        weekday_mult = 1.15 if self.session_idx % 7 in (5, 6) else 1.0
-        month_mult = 1.1 if (self.session_idx // 30) in (5, 6, 7) else 0.95
+        weekday_mult = 1.15 if self.turn_idx % 7 in (5, 6) else 1.0
+        month_mult = 1.1 if (self.turn_idx // 30) in (5, 6, 7) else 0.95
 
         active_sku_count = sum(1 for qty in self.machine.values() if qty > 0)
         if active_sku_count == 0:
@@ -255,8 +258,8 @@ class VendingEnv(BaseEnvironment):
         self.total_units_sold += sold
         return sold, revenue, logs
 
-    def step_session(self) -> SessionResult:
-        self.session_idx += 1
+    def step_turn(self) -> TurnResult:
+        self.turn_idx += 1
         delivery_logs = self._deliver_orders()
         sold_units, revenue, sales_logs = self._simulate_sales()
         self._last_revenue = revenue
@@ -270,8 +273,8 @@ class VendingEnv(BaseEnvironment):
 
         self._today_logs = delivery_logs + sales_logs + [f"fee_charged {self.cfg.daily_fee:.2f}"]
 
-        return SessionResult(
-            session_idx=self.session_idx,
+        return TurnResult(
+            turn_idx=self.turn_idx,
             sold_units=sold_units,
             revenue=revenue,
             machine_cash=self.machine_cash,
@@ -330,7 +333,7 @@ class VendingEnv(BaseEnvironment):
         return VENDING_PROBE_USER_POSTSCRIPT
 
     def to_checkpoint(self) -> dict:
-        return {"session_idx": self.session_idx,
+        return {"turn_idx": self.turn_idx,
             "cash": self.cash,
             "machine_cash": self.machine_cash,
             "storage": dict(self.storage),
@@ -350,7 +353,8 @@ class VendingEnv(BaseEnvironment):
     @classmethod
     def from_checkpoint(cls, data: dict, cfg: EnvConfig) -> "VendingEnv":
         env = cls(cfg, seed=0)  # seed doesn't matter, RNG is restored
-        env.session_idx = data["session_idx"]
+        # Accept legacy ``session_idx`` ckpts written before PR #2.
+        env.turn_idx = data.get("turn_idx", data.get("session_idx", 0))
         env.cash = data["cash"]
         env.machine_cash = data["machine_cash"]
         env.storage = defaultdict(int, data["storage"])
@@ -369,7 +373,7 @@ class VendingEnv(BaseEnvironment):
 
     def build_snapshot(self) -> EnvSnapshot:
         return VendingSnapshot(
-            session_idx=self.session_idx,
+            turn_idx=self.turn_idx,
             logs=list(self.today_logs()),
             net_worth=round(self.net_worth(), 2),
             cash=round(self.cash, 2),

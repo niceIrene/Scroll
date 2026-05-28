@@ -1,8 +1,8 @@
 """BEAM env config.
 
 A BEAM run answers all probing questions for ONE chat at the configured
-scale. ``num_sessions`` is set by the env to ``num_batches + 1`` once
-the chat is loaded; the probe session fires at the end.
+scale. ``num_turns`` is set by the env to ``num_batches + 1`` once
+the chat is loaded; the probe turn fires at the end.
 """
 
 from __future__ import annotations
@@ -12,9 +12,9 @@ from dataclasses import dataclass, fields
 
 @dataclass
 class BeamEnvConfig:
-    # Upper bound on the session count; the env overwrites this with the
-    # loaded chat's actual batch count + 1 probe session.
-    num_sessions: int = 50
+    # Upper bound on the turn count; the env overwrites this with the
+    # loaded chat's actual batch count + 1 probe turn.
+    num_turns: int = 50
 
     # Root of the BEAM repo's chats directory. Submoduled at external/beam/.
     dataset_root: str = "external/beam/chats"
@@ -40,11 +40,14 @@ class BeamEnvConfig:
     def from_dict(cls, d: dict) -> "BeamEnvConfig":
         """Construct from a raw config dict.
 
-        Accepts the legacy ``"days"`` key as a synonym for
-        ``"num_sessions"`` so older configs continue to parse.
+        Accepts legacy ``"days"`` / ``"num_sessions"`` keys as synonyms
+        for ``"num_turns"`` so older configs continue to parse.
         """
         known = {f.name for f in fields(cls)}
         normalized = dict(d)
-        if "num_sessions" not in normalized and "days" in normalized:
-            normalized["num_sessions"] = normalized["days"]
+        if "num_turns" not in normalized:
+            if "num_sessions" in normalized:
+                normalized["num_turns"] = normalized.pop("num_sessions")
+            elif "days" in normalized:
+                normalized["num_turns"] = normalized["days"]
         return cls(**{k: v for k, v in normalized.items() if k in known})

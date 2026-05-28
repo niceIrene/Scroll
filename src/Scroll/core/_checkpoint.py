@@ -32,7 +32,7 @@ def config_hash(config: dict) -> str:
 
 def save_checkpoint(
     output_dir: str | Path,
-    session_idx: int,
+    turn_idx: int,
     env,
     data,
     agent,
@@ -42,10 +42,16 @@ def save_checkpoint(
     seed: int,
     cfg_hash: str,
 ) -> None:
-    """Save a checkpoint after a completed session."""
+    """Save a checkpoint after a completed turn.
+
+    On-disk layout keeps the legacy ``session_NNN`` directory names
+    so existing checkpoint trees stay readable across the PR #2
+    rename. ``meta`` records both ``turn_idx`` (new) and
+    ``session_idx`` (back-compat alias).
+    """
     base = Path(output_dir) / "checkpoints"
-    session_dir = base / f"session_{session_idx:03d}"
-    session_dir.mkdir(parents=True, exist_ok=True)
+    turn_dir = base / f"session_{turn_idx:03d}"
+    turn_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint = {
         "env": env.to_checkpoint(),
@@ -54,7 +60,7 @@ def save_checkpoint(
         "log": log.to_checkpoint(),  # {"entry_count": N} pointer into the jsonl
         "loop_state": loop_state,
     }
-    (session_dir / "checkpoint.json").write_text(
+    (turn_dir / "checkpoint.json").write_text(
         json.dumps(checkpoint, indent=2, default=str),
         encoding="utf-8",
     )
@@ -62,12 +68,13 @@ def save_checkpoint(
     meta = {
         "version": 1,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "session_idx": session_idx,
+        "turn_idx": turn_idx,
+        "session_idx": turn_idx,  # legacy alias; drop in PR #6
         "policy": policy,
         "seed": seed,
         "config_hash": cfg_hash,
     }
-    (session_dir / "_meta.json").write_text(
+    (turn_dir / "_meta.json").write_text(
         json.dumps(meta, indent=2),
         encoding="utf-8",
     )
@@ -76,7 +83,7 @@ def save_checkpoint(
     latest = base / "latest"
     if latest.is_symlink() or latest.exists():
         latest.unlink()
-    latest.symlink_to(f"session_{session_idx:03d}")
+    latest.symlink_to(f"session_{turn_idx:03d}")
 
 
 def load_checkpoint(

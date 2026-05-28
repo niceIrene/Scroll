@@ -32,7 +32,7 @@ src/Scroll/                     # framework
 │                               make_chat_memory_namespace, write_chat_turn_entries,
 │                               make_time_range_extractor
 ├── log.py                      ConversationLog (E, append-only JSONL)
-├── benchmark.py                run_single, _run_session_loop, aggregate
+├── benchmark.py                run_single, _run_turn_loop, aggregate
 ├── cli.py                      `Scroll` CLI entry point (incl. `rebuild-w`)
 ├── _tracing.py                 OTel setup
 ├── __init__.py, __main__.py
@@ -85,18 +85,19 @@ BaseAgent (abc)
 Subclasses provide three SCROLL hooks:
 - `_ensure_schema(memoryspace)` — `CREATE TABLE` / `CREATE VIEW` for the env.
 - `ingestor_cls` (class attribute) — the env's `Ingestor` subclass; `f: E → W`. Attached to `memoryspace` at agent init.
-- `_emit_context_entries(session_idx, notes)` / `_emit_outcome_entries(session_idx, logs)` — append env data to `E` as typed LogEntries (defaults: one `kind="briefing_note"` per note, one `kind="env_log"` per log line). Override to additionally serialize env-side state (inbox mail, env snapshot, etc.) — see `VendingAgent` for the canonical pattern.
+- `_emit_context_entries(turn_idx, notes)` / `_emit_outcome_entries(turn_idx, logs)` — append env data to `E` as typed LogEntries (defaults: one `kind="briefing_note"` per note, one `kind="env_log"` per log line). Override to additionally serialize env-side state (inbox mail, env snapshot, etc.) — see `VendingAgent` for the canonical pattern.
 
 `W = build(E)` is enforced by the substrate: every public method on `Memoryspace` calls `_maybe_catch_up()` first, consuming any unprocessed tail of `E` into `W`. The CLI `Scroll rebuild-w --log conv.jsonl --env <id> --output-dir <dir>` runs the same ingestor offline and is the canonical invariant test.
 
-Plus the standard `CodeActAgent` overrides: `session_prompt`, `sys_prompt`, `namespace_docs`, `extra_namespace`, `_base_namespace`.
+Plus the standard `CodeActAgent` overrides: `turn_prompt`, `sys_prompt`, `namespace_docs`, `extra_namespace`, `_base_namespace`.
 
-## Session / turn vocabulary
+## Task / session / turn vocabulary
 
-Three nesting levels, all named consistently in the code:
-- **Task** — one Scroll run, one `run_single` invocation (one LME QA, one Vending sim, one BEAM chat).
-- **Session** — a coherent context chunk inside a task (`session_idx` in `LogEntry`, `BaseEnvironment.session_idx`, `_run_session_loop`, `step_session`, `run_session`). For LME = one past chat session; for Vending = one calendar day (vending's SQL still uses a `day` column as a domain field, mapped 1:1 from `session_idx` inside `VendingIngestor`); for BEAM = one chat batch.
-- **Turn** — one LLM message inside a session (`turn_idx`); each CodeAct loop iteration is one turn. The agent config field is **`max_iters_per_turn`** — bounds the inner CodeAct loop, i.e. how many LLM calls (+ tool execs) the agent may take to process one session before being forced to commit.
+Three nesting levels, all named consistently in the code (renamed in PR #2 of the loop redesign; old names — `run_session`, `step_session`, `num_sessions`, `SessionResult`, `LogEntry.session_idx`, `BaseEnvironment.session_idx`, `get_probes_for_session`, etc. — are kept as back-compat aliases that drop in PR #6):
+
+- **Task** — one Scroll run, one `run_single` invocation (one LME QA, one Vending sim, one BEAM chat). One persisted `E`, one derived `W`.
+- **Session** — one agent-instance lifetime. Crossing this boundary = spawn a new `Agent(...)`; in-context history is wiped; only persisted `E` / `W` survive. Today every env runs as exactly **one** session per task. The substrate API for that boundary is `start_session` / `end_session` (added in PR #3).
+- **Turn** — one CodeAct exchange: one user prompt → agent commits via `done()` or hits `max_iters_per_turn`. Carries `turn_idx` on `LogEntry`, `BaseEnvironment.turn_idx`, `_run_turn_loop`, `step_turn`, `run_turn`. For LME today = one past chat session (PR #4 makes ingestion turn-less); for Vending = one calendar day (vending's SQL still uses a `day` column as a domain field, mapped 1:1 from `turn_idx` inside `VendingIngestor`); for BEAM today = one chat batch (PR #5 same). The agent config field is **`max_iters_per_turn`** — bounds the inner CodeAct loop, i.e. how many LLM calls (+ tool execs) the agent may take inside a single turn before being forced to commit.
 
 ## Workflow
 

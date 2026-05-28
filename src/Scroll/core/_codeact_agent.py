@@ -5,9 +5,9 @@ Subclasses customize via:
   - ``sys_prompt``           (role + strategy, ends up after the substrate prelude)
   - ``init_namespace()``     (objects to expose in the REPL globals)
   - ``namespace_docs()``     (documentation appended to the system prompt)
-  - ``clear_namespace_each_session`` (whether to wipe globals between days; default True)
+  - ``clear_namespace_each_turn`` (whether to wipe globals between turns; default True)
 
-History is kept continuous across sessions. When total chars exceed
+History is kept continuous across turns. When total chars exceed
 ``cfg.context_max_tokens * 4``, ``_compress_history_to_budget`` folds
 the oldest batch into a running ``_compressed_summary`` and drops
 those messages from ``self._history``. The summary is re-injected as
@@ -205,7 +205,7 @@ class _UsageTrackingModel:
     ``ToolState`` on every call.
 
     Every CodeActAgent has exactly one wrapped model object, shared by
-    its session-loop calls (via ``_call_model``) AND by any closure that
+    its turn-loop calls (via ``_call_model``) AND by any closure that
     captures ``self._model`` (e.g. LME / BEAM's ``_oneshot``). So wrapping
     once at agent ``__init__`` time covers all paths — every LLM
     response that flows through the agent contributes to the
@@ -319,7 +319,7 @@ class CodeActAgent(BaseAgent):
     """
 
     sys_prompt: str = ""
-    clear_namespace_each_session: bool = True
+    clear_namespace_each_turn: bool = True
     # Probe-time iteration cap. Tools-heavy strategies (memoryspace + log
     # querying) may need more cells than mem-only baselines — bump this
     # in subclasses if the agent can't reliably finish recall in 5 cells.
@@ -337,14 +337,14 @@ class CodeActAgent(BaseAgent):
         self.storage = storage  # backwards-compat alias during transition
         self.data = data
         self.last_context: list[str] = []
-        self._current_session: int = 0
+        self._current_turn: int = 0
         self._pending_env_outcomes: list[str] = []
         self._pending_datasource_notes: list[str] = []
         self._tool_state = ToolState(data=data, cfg=cfg)
         self._iter_count: int = 0
 
         raw_model, self._msg_cls = _init_model(self.cfg)
-        # Wrap so every model call (session-loop + closures that capture
+        # Wrap so every model call (turn-loop + closures that capture
         # ``self._model``, e.g. LME / BEAM's ``_oneshot``) records token
         # usage onto ``self._tool_state`` for benchmark efficiency reporting.
         self._model = _UsageTrackingModel(raw_model, self._tool_state)
@@ -390,27 +390,27 @@ class CodeActAgent(BaseAgent):
         return ""
 
     # ------------------------------------------------------------------
-    # Per-session prompts
+    # Per-turn prompts
     # ------------------------------------------------------------------
 
-    def session_prompt(self, session_idx: int) -> str:
+    def turn_prompt(self, turn_idx: int) -> str:
         return (
-            f"Day {session_idx} has started.\n\n"
+            f"Day {turn_idx} has started.\n\n"
             "Decide what to do today. Write Python to take actions. "
             "When you have no more actions for today, reply with no "
             "Python code block to end the day."
         )
 
-    def _compose_session_user_msg(self, session_idx: int) -> str:
+    def _compose_turn_user_msg(self, turn_idx: int) -> str:
         """Prepend yesterday's env outcomes + today's datasource notes."""
-        body = self.session_prompt(session_idx)
+        body = self.turn_prompt(turn_idx)
         prefix_sections: list[str] = []
         ns_reminder = self._namespace_reminder()
         if ns_reminder:
             prefix_sections.append(ns_reminder)
         if self._pending_env_outcomes:
             lines = "\n".join(f"  - {line}" for line in self._pending_env_outcomes)
-            prefix_sections.append(f"Overnight events from session_idx {session_idx - 1}:\n{lines}")
+            prefix_sections.append(f"Overnight events from turn_idx {turn_idx - 1}:\n{lines}")
         if self._pending_datasource_notes:
             lines = "\n".join(f"  - {line}" for line in self._pending_datasource_notes)
             prefix_sections.append(f"Today's briefing:\n{lines}")
@@ -423,7 +423,7 @@ class CodeActAgent(BaseAgent):
     def _namespace_reminder(self) -> str:
         """One-line listing of REPL globals bound inside ``execute_python``.
 
-        Prepended to every session_idx's user message so the model is far less
+        Prepended to every turn's user message so the model is far less
         likely to invent ``view_storage()`` or ``from tools import ...``
         when writing the ``code`` argument of an ``execute_python`` tool
         call. Listing is short — names only — to keep token cost negligible.
@@ -452,7 +452,7 @@ class CodeActAgent(BaseAgent):
         what one iteration is, what ``today`` means, and how to end an
         iteration. Returns ``""`` if the env isn't wired up yet
         (constructor path) — the prompt is only consumed inside
-        ``run_session``, where env is set.
+        ``run_turn``, where env is set.
         """
         env = getattr(self, "_tool_state", None) and self._tool_state.env
         if env is None:
@@ -500,7 +500,7 @@ class CodeActAgent(BaseAgent):
         """System prompt used while answering a probe.
 
         Default: identical to :meth:`_full_sys_prompt` (no swap; probe
-        runs in the same system-prompt context as the session loop).
+        runs in the same system-prompt context as the turn loop).
         Subclass override hook for envs that want different rules at
         probe time — LME / BEAM override this to drop the env's
         "RUN STRUCTURE" endgame (irrelevant during probe) and inject
@@ -515,12 +515,12 @@ class CodeActAgent(BaseAgent):
     def _rebuild_namespace(self) -> None:
         """Reset the REPL globals to a freshly built namespace.
 
-        Always injects ``today`` (the current 1-indexed session_idx number) so
+        Always injects ``today`` (the current 1-indexed turn number) so
         agent code can write ``log.range_by_day(today - 7, today - 1)``
-        without parsing the session_idx out of the briefing text.
+        without parsing the turn index out of the briefing text.
         """
         ns = self.init_namespace()
-        ns.setdefault("today", self._current_session)
+        ns.setdefault("today", self._current_turn)
         self._runtime.reset(initial_globals=ns)
 
     # ------------------------------------------------------------------
@@ -532,32 +532,37 @@ class CodeActAgent(BaseAgent):
         return self._tool_state._message_count
 
     @property
-    def session_ended(self) -> bool:
-        return self._tool_state._session_ended
+    def turn_ended(self) -> bool:
+        return self._tool_state._turn_ended
 
-    def receive_outcomes(self, session_idx: int, logs: list[str]) -> None:
+    # Back-compat property; drop in PR #6.
+    @property
+    def session_ended(self) -> bool:
+        return self._tool_state._turn_ended
+
+    def receive_outcomes(self, turn_idx: int, logs: list[str]) -> None:
         self._pending_env_outcomes = list(logs)
 
-    def receive_context(self, session_idx: int, notes: list[str]) -> None:
+    def receive_context(self, turn_idx: int, notes: list[str]) -> None:
         self._pending_datasource_notes = list(notes)
 
-    def run_session(self, env) -> list[str]:
-        session_idx = env.session_idx
-        self._current_session = session_idx + 1
+    def run_turn(self, env) -> list[str]:
+        turn_idx = env.turn_idx
+        self._current_turn = turn_idx + 1
         self._tool_state.env = env
-        self._tool_state.reset_session()
+        self._tool_state.reset_turn()
 
-        if self.clear_namespace_each_session:
+        if self.clear_namespace_each_turn:
             self._rebuild_namespace()
         else:
             # Even when globals persist across days, refresh ``today``
             # so the agent's worked-example pattern (``log.range_by_day(
-            # today - 7, today - 1)``) keeps pointing at the real session.
-            self._runtime.update_globals(today=self._current_session)
+            # today - 7, today - 1)``) keeps pointing at the real turn.
+            self._runtime.update_globals(today=self._current_turn)
 
-        prompt = self._compose_session_user_msg(session_idx + 1)
+        prompt = self._compose_turn_user_msg(turn_idx + 1)
 
-        # Keep history across sessions; old messages get summarized into
+        # Keep history across turns; old messages get summarized into
         # ``_compressed_summary`` and dropped by
         # ``_compress_history_to_budget`` once total chars exceed budget.
         # The summary is re-injected at every ``_call_model``.
@@ -566,10 +571,10 @@ class CodeActAgent(BaseAgent):
                 {"role": "system", "content": self._full_sys_prompt()},
             ]
         self._history.append({"role": "user", "content": prompt})
-        # Mirror the session-start user prompt into E (matches the legacy
+        # Mirror the turn-start user prompt into E (matches the legacy
         # SlidingMemory.add path).
         self.log.append(LogEntry.make(
-            turn_idx=self._current_session,
+            turn_idx=self._current_turn,
             role="user",
             content=prompt,
         ))
@@ -594,7 +599,7 @@ class CodeActAgent(BaseAgent):
         try:
             for attempt in range(1, MODEL_CALL_MAX_RETRIES + 1):
                 try:
-                    asyncio.run(self._run_session_inner())
+                    asyncio.run(self._run_turn_inner())
                     last_err = None
                     break
                 except KeyboardInterrupt:
@@ -612,7 +617,7 @@ class CodeActAgent(BaseAgent):
                         )
                         time.sleep(MODEL_CALL_RETRY_DELAY)
             if last_err is not None:
-                _log.error("agent_error on session %d: %s", session_idx, last_err)
+                _log.error("agent_error on turn %d: %s", turn_idx, last_err)
         finally:
             signal.signal(signal.SIGINT, prev_handler)
 
@@ -622,11 +627,11 @@ class CodeActAgent(BaseAgent):
         actions = list(self._tool_state._action_log)
         self.last_context = self._snapshot_history()
 
-        if not self._tool_state._session_ended:
-            self._tool_state._session_ended = True
+        if not self._tool_state._turn_ended:
+            self._tool_state._turn_ended = True
         return actions
 
-    async def _run_session_inner(self) -> None:
+    async def _run_turn_inner(self) -> None:
         """Session-loop inner: one user turn → assistant agentic exchange.
 
         Uses the OpenAI tool-call protocol:
@@ -669,7 +674,7 @@ class CodeActAgent(BaseAgent):
             tool_calls_payload: list[dict] = []
             for idx, block in enumerate(tool_use_blocks):
                 tc_id = block.get("id") or (
-                    f"tc-d{self._current_session}-{it}-{idx}"
+                    f"tc-d{self._current_turn}-{it}-{idx}"
                 )
                 raw_input = block.get("input")
                 if isinstance(raw_input, dict):
@@ -699,7 +704,7 @@ class CodeActAgent(BaseAgent):
             self._history.append(assistant_msg)
 
             self.log.append(LogEntry.make(
-                turn_idx=self._current_session,
+                turn_idx=self._current_turn,
                 role="assistant",
                 content=text,
                 metadata={
@@ -711,7 +716,7 @@ class CodeActAgent(BaseAgent):
 
             if not tool_use_blocks:
                 # No tool call — agent has nothing more to do this
-                # turn. End of session.
+                # turn. End of turn.
                 break
 
             # Execute each tool call, append a role=tool message per result.
@@ -737,7 +742,7 @@ class CodeActAgent(BaseAgent):
                 ops_label = ", ".join(ops) if ops else "no-ops"
                 line_count = code.count("\n") + 1
                 span_name = (
-                    f"code_exec d{self._current_session}.i{it}.{idx} "
+                    f"code_exec d{self._current_turn}.i{it}.{idx} "
                     f"({line_count}L) [{ops_label}]"
                 )
                 code_preview = code if len(code) <= 3000 else (
@@ -746,7 +751,7 @@ class CodeActAgent(BaseAgent):
                 with _tracer.start_as_current_span(span_name) as span:
                     span.set_attributes({
                         "tool.name": "execute_python",
-                        "cell.session": self._current_session,
+                        "cell.turn": self._current_turn,
                         "cell.iter": it,
                         "cell.tool_idx": idx,
                         "cell.iter_lifetime": self._iter_count,
@@ -769,8 +774,8 @@ class CodeActAgent(BaseAgent):
                         f"stdout={len(result.stdout or '')}c",
                         f"ops=[{ops_label}]",
                     ]
-                    if result.session_ended:
-                        summary_bits.append("session_ended=True")
+                    if result.turn_ended:
+                        summary_bits.append("turn_ended=True")
                     if result.exception:
                         summary_bits.append("EXCEPTION")
                     cell_summary = " | ".join(summary_bits)
@@ -797,7 +802,7 @@ class CodeActAgent(BaseAgent):
                         "cell.stdout_preview": stdout_preview or "[empty]",
                         "cell.stdout_lines": stdout_lines,
                         "cell.stdout_chars": len(result.stdout or ""),
-                        "code_exec.session_ended": result.session_ended,
+                        "code_exec.turn_ended": result.turn_ended,
                         "code_exec.has_exception": (
                             result.exception is not None
                         ),
@@ -820,7 +825,7 @@ class CodeActAgent(BaseAgent):
                     "content": result.to_user_message(),
                 })
 
-                if result.session_ended:
+                if result.turn_ended:
                     ended = True
                     break
 
@@ -831,7 +836,7 @@ class CodeActAgent(BaseAgent):
         if not ended:
             # Either fell off the iteration cap, or model emitted a
             # no-tool-call response (= "I'm done with this turn").
-            self._tool_state._session_ended = True
+            self._tool_state._turn_ended = True
 
     async def _call_model(
         self,
@@ -848,11 +853,11 @@ class CodeActAgent(BaseAgent):
         message list handle injection themselves).
 
         Per-call quota-aware retry: Dashscope occasionally returns 429
-        / insufficient_quota under load. Session-level retry (in run_session)
-        is too coarse for these — restarting a whole session on a single
+        / insufficient_quota under load. Turn-level retry (in run_turn)
+        is too coarse for these — restarting a whole turn on a single
         flaky call wastes work and re-fires the same throttle. So we
         retry HERE with longer backoff (15s, 30s) on quota-class errors
-        only; non-quota exceptions bubble to the session-level retry as
+        only; non-quota exceptions bubble to the turn-level retry as
         before.
         """
         msgs = messages_override if messages_override is not None else self._history
@@ -913,14 +918,17 @@ class CodeActAgent(BaseAgent):
         """
         return None
 
-    async def _on_session_end_async(self) -> None:
-        """Hook fired after the per-session loop finishes (before asyncio.run exits).
+    async def _on_turn_end_async(self) -> None:
+        """Hook fired after the per-turn loop finishes (before asyncio.run exits).
 
-        Default no-op. Subclasses may override to flush per-session
-        state into external storage before the next session's
+        Default no-op. Subclasses may override to flush per-turn
+        state into external storage before the next turn's
         namespace wipe.
         """
         return None
+
+    # Back-compat alias; drop in PR #6.
+    _on_session_end_async = _on_turn_end_async
 
     # ------------------------------------------------------------------
     # Logging / mirroring
@@ -944,9 +952,9 @@ class CodeActAgent(BaseAgent):
         (``CellResult.to_user_message`` truncates to 4 K) so the log
         remains useful for offline inspection without runaway growth.
         """
-        cell_id = f"cell-{self._current_session}-{iter_idx}"
+        cell_id = f"cell-{self._current_turn}-{iter_idx}"
         self.log.append(LogEntry.make(
-            turn_idx=self._current_session,
+            turn_idx=self._current_turn,
             role="assistant",
             tool_call={
                 "id": cell_id,
@@ -962,17 +970,17 @@ class CodeActAgent(BaseAgent):
         ) + (
             ("\n[exception]\n" + result.exception) if result.exception else ""
         ) + (
-            "\n[session ended]" if result.session_ended else ""
+            "\n[turn ended]" if result.turn_ended else ""
         )
         self.log.append(LogEntry.make(
-            turn_idx=self._current_session,
+            turn_idx=self._current_turn,
             role="tool",
             tool_result={
                 "id": cell_id,
                 "name": "code_exec",
                 "output": output_blob.strip(),
             },
-            metadata={"kind": "stdout", "session_ended": result.session_ended},
+            metadata={"kind": "stdout", "turn_ended": result.turn_ended},
         ))
 
     def _record_probe_cell(
@@ -984,7 +992,7 @@ class CodeActAgent(BaseAgent):
         Same shape as :meth:`_record_cell` but tagged with
         ``metadata.kind`` of ``"probe_code"`` / ``"probe_stdout"`` and
         a ``probe-cell-`` id prefix so probe lookups are distinguishable
-        from session-loop cells. ``extract_tool_trace`` reads from
+        from turn-loop cells. ``extract_tool_trace`` reads from
         ``agent.log.entries[prev_log_count:]`` to populate
         ``ProbeResult.tool_trace``; without this mirror the trace is
         always empty.
@@ -995,9 +1003,9 @@ class CodeActAgent(BaseAgent):
         entry's ``content`` field so trajectory distillation captures
         THINK / DO / SEE triples, not just DO / SEE.
         """
-        cell_id = f"probe-cell-{self._current_session}-{iter_idx}"
+        cell_id = f"probe-cell-{self._current_turn}-{iter_idx}"
         self.log.append(LogEntry.make(
-            turn_idx=self._current_session,
+            turn_idx=self._current_turn,
             role="assistant",
             content=thought or "",
             tool_call={
@@ -1015,7 +1023,7 @@ class CodeActAgent(BaseAgent):
             ("\n[exception]\n" + result.exception) if result.exception else ""
         )
         self.log.append(LogEntry.make(
-            turn_idx=self._current_session,
+            turn_idx=self._current_turn,
             role="tool",
             tool_result={
                 "id": cell_id,
@@ -1026,7 +1034,7 @@ class CodeActAgent(BaseAgent):
         ))
 
     def _snapshot_history(self) -> list[str]:
-        """Return a human-readable summary of this session's LM turns."""
+        """Return a human-readable summary of this turn's LM messages."""
         lines: list[str] = []
         for msg in self._history:
             role = msg.get("role", "?")
@@ -1144,28 +1152,28 @@ class CodeActAgent(BaseAgent):
         Probe-mode adjustments:
 
         - The system prompt is swapped to ``_probe_sys_prompt()``,
-          which replaces the session-loop substrate rules (always reply
+          which replaces the turn-loop substrate rules (always reply
           with a code block; no-code response ends the day) with
           probe-specific rules (plain-text ``Answer:`` required; do not
-          end the session). Without this swap the model can drop into
+          end the turn). Without this swap the model can drop into
           a no-code turn intending to end the day mid-probe, before it
           has committed an answer.
         - History handling is unified across memory modes: probes
-          run *inside the same-session session* — we keep ``self._history``
-          (today's session-loop turns: system + briefing + cell traces),
+          run *inside the same agent session* — we keep ``self._history``
+          (current turn's messages: system + briefing + cell traces),
           replace the system prompt at index 0 with the probe-mode
           version, and append the question. This way step-mode agents
-          see today's reasoning context while answering (matching what
+          see the in-flight reasoning context while answering (matching what
           sliding always did), and the prompt's "you must query for
           factual probes" rule pushes them to re-fetch from memoryspace
-          / log instead of trusting mid-session intermediate values
+          / log instead of trusting mid-turn intermediate values
           they might recall. For sliding we additionally trim to
           context budget since its history
           spans days. ``self._history`` is restored after the probe
           so the Q+A doesn't leak into working memory.
         """
-        old_day_ended = self._tool_state._session_ended
-        self._tool_state._session_ended = False
+        old_day_ended = self._tool_state._turn_ended
+        self._tool_state._turn_ended = False
 
         history_backup = list(self._history)
         probe_sys_msg = {
@@ -1194,7 +1202,7 @@ class CodeActAgent(BaseAgent):
             answer = f"[probe error: {e}]"
         finally:
             self._history = history_backup
-            self._tool_state._session_ended = old_day_ended
+            self._tool_state._turn_ended = old_day_ended
             if pq_was_present:
                 self._runtime.globals["probe_question"] = old_pq
             else:
@@ -1204,7 +1212,7 @@ class CodeActAgent(BaseAgent):
     async def _answer_probe_inner(self, max_iters: int) -> str:
         """Probe answering loop using the OpenAI tool-call protocol.
 
-        Differs from :meth:`_run_session_inner` in two probe-specific
+        Differs from :meth:`_run_turn_inner` in two probe-specific
         ways:
           1. Force one retry on a zero-tool-call abstention so the
              agent has to actually query memoryspace before refusing.
@@ -1234,7 +1242,7 @@ class CodeActAgent(BaseAgent):
             tool_calls_payload: list[dict] = []
             for idx, block in enumerate(tool_use_blocks):
                 tc_id = block.get("id") or (
-                    f"probe-tc-d{self._current_session}-{it}-{idx}"
+                    f"probe-tc-d{self._current_turn}-{it}-{idx}"
                 )
                 raw_input = block.get("input")
                 if isinstance(raw_input, dict):
@@ -1321,7 +1329,7 @@ class CodeActAgent(BaseAgent):
                 ops_label = ", ".join(ops) if ops else "no-ops"
                 line_count = code.count("\n") + 1
                 span_name = (
-                    f"probe_cell d{self._current_session}.i{it}.{idx} "
+                    f"probe_cell d{self._current_turn}.i{it}.{idx} "
                     f"({line_count}L) [{ops_label}]"
                 )
                 code_preview = code if len(code) <= 3000 else (
@@ -1330,7 +1338,7 @@ class CodeActAgent(BaseAgent):
                 with _tracer.start_as_current_span(span_name) as span:
                     span.set_attributes({
                         "tool.name": "execute_python",
-                        "cell.session": self._current_session,
+                        "cell.turn": self._current_turn,
                         "cell.iter": it,
                         "cell.tool_idx": idx,
                         "cell.kind": "probe",
@@ -1397,7 +1405,7 @@ class CodeActAgent(BaseAgent):
                     "tool_call_id": tc_id,
                     "content": result.to_user_message(),
                 })
-                if result.session_ended:
+                if result.turn_ended:
                     day_ended = True
                     break
 

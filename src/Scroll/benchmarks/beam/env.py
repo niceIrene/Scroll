@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from Scroll.core import BaseEnvironment, SessionResult, EnvSnapshot
+from Scroll.core import BaseEnvironment, TurnResult, EnvSnapshot
 from Scroll.benchmarks.beam.catalog import BeamEnvConfig
 from Scroll.benchmarks.beam.dataset import BeamItem, load_chat, normalize_beam_date
 
@@ -48,14 +48,16 @@ class BeamEnv(BaseEnvironment):
             )
         self.cfg = cfg
         self.seed = seed
-        self.session_idx = 0
+        self.turn_idx = 0
 
         self.item: BeamItem = load_chat(
             cfg.dataset_root, cfg.scale, cfg.chat_id,
         )
 
-        # ``days`` = num_batches + 1 probe day (matches LME's shape).
-        cfg.num_sessions = self.item.num_batches + 1
+        # ``num_turns`` = num_batches + 1 probe turn (matches LME's shape).
+        # PR #5 retires this trick in favor of ``ingest_all`` + end-of-task
+        # probes.
+        cfg.num_turns = self.item.num_batches + 1
 
         self._current_batch_turns: list[dict] | None = None
         self._current_batch_idx: int | None = None
@@ -67,11 +69,11 @@ class BeamEnv(BaseEnvironment):
         _probes.set_active_item(self.item, cfg)
 
     # ------------------------------------------------------------------
-    # Per-day API
+    # Per-turn API
     # ------------------------------------------------------------------
 
-    def begin_session(self, session_idx: int) -> list[str]:
-        idx = session_idx  # 0-based into self.item.batches
+    def begin_turn(self, turn_idx: int) -> list[str]:
+        idx = turn_idx  # 0-based into self.item.batches
         if idx >= self.item.num_batches:
             self._current_batch_turns = None
             self._current_batch_idx = None
@@ -91,10 +93,10 @@ class BeamEnv(BaseEnvironment):
         self._today_logs = notes
         return list(notes)
 
-    def step_session(self) -> SessionResult:
-        self.session_idx += 1
-        return SessionResult(
-            session_idx=self.session_idx,
+    def step_turn(self) -> TurnResult:
+        self.turn_idx += 1
+        return TurnResult(
+            turn_idx=self.turn_idx,
             sold_units=0,
             revenue=0.0,
             machine_cash=0.0,
@@ -107,7 +109,7 @@ class BeamEnv(BaseEnvironment):
 
     def visible_state(self) -> dict:
         return {
-            "session_idx": self.session_idx,
+            "turn_idx": self.turn_idx,
             "num_batches": self.item.num_batches,
             "current_batch_idx": self._current_batch_idx,
             "current_time_anchor": self._current_time_anchor,
@@ -121,8 +123,8 @@ class BeamEnv(BaseEnvironment):
 
     def is_terminal(self) -> bool:
         # Allow exactly one iteration past the last batch for the probe
-        # day; becomes terminal after probes fire.
-        return self.session_idx > self.item.num_batches
+        # turn; becomes terminal after probes fire.
+        return self.turn_idx > self.item.num_batches
 
     def substrate_endgame_prompt(self) -> str:
         return _BEAM_SUBSTRATE_ENDGAME
@@ -137,7 +139,7 @@ class BeamEnv(BaseEnvironment):
 
     def build_snapshot(self) -> EnvSnapshot:
         return EnvSnapshot(
-            session_idx=self.session_idx,
+            turn_idx=self.turn_idx,
             logs=list(self._today_logs),
             extra={
                 "scale": self.item.scale,
@@ -189,7 +191,7 @@ class BeamEnv(BaseEnvironment):
     # ------------------------------------------------------------------
 
     def to_checkpoint(self) -> dict:
-        return {"session_idx": self.session_idx,
+        return {"turn_idx": self.turn_idx,
             "seed": self.seed,
             "scale": self.item.scale,
             "chat_id": self.item.chat_id,
@@ -201,6 +203,7 @@ class BeamEnv(BaseEnvironment):
         cfg.scale = data["scale"]
         cfg.chat_id = data["chat_id"]
         env = cls(cfg, seed=data.get("seed", 0))
-        env.session_idx = data["session_idx"]
+        # Accept legacy ``session_idx`` ckpts written before PR #2.
+        env.turn_idx = data.get("turn_idx", data.get("session_idx", 0))
         env._today_logs = list(data.get("today_logs") or [])
         return env

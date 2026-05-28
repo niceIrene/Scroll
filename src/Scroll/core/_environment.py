@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from Scroll.core._evaluation import EnvSnapshot, ProbeResult, ProbeSpec
-    from Scroll.core._models import SessionResult
+    from Scroll.core._models import TurnResult
 
 
 class BaseEnvironment(ABC):
@@ -18,13 +18,13 @@ class BaseEnvironment(ABC):
     (vending machine, chat-memory haystack, restaurant, etc.).
 
     The genuinely-required surface is small — three abstract methods
-    (``visible_state`` / ``step_session`` / ``build_snapshot``) and the
-    session counter. Everything else (``today_logs``, ``net_worth``,
-    ``begin_session``, prompts, probes) has sensible defaults so an env
+    (``visible_state`` / ``step_turn`` / ``build_snapshot``) and the
+    turn counter. Everything else (``today_logs``, ``net_worth``,
+    ``begin_turn``, prompts, probes) has sensible defaults so an env
     only implements what it actually needs.
     """
 
-    session_idx: int
+    turn_idx: int
 
     # ---------- required ----------
 
@@ -33,8 +33,8 @@ class BaseEnvironment(ABC):
         """Return the state visible to the agent (JSON-serializable)."""
 
     @abstractmethod
-    def step_session(self) -> SessionResult:
-        """Advance the simulation by one session. Returns the session's results."""
+    def step_turn(self) -> TurnResult:
+        """Advance the simulation by one turn. Returns the turn's results."""
 
     @abstractmethod
     def build_snapshot(self) -> EnvSnapshot:
@@ -44,10 +44,10 @@ class BaseEnvironment(ABC):
 
     def today_logs(self) -> list[str]:
         """Return outcome log lines describing what happened in the
-        just-completed session.
+        just-completed turn.
 
         Vending uses these to surface sales / delivery / fee events to
-        the agent's next-session prompt. Passive observation envs (chat-
+        the agent's next-turn prompt. Passive observation envs (chat-
         memory benchmarks) have no outcomes and inherit the default
         empty list.
         """
@@ -62,10 +62,10 @@ class BaseEnvironment(ABC):
         """
         return 0.0
 
-    def begin_session(self, session_idx: int) -> list[str]:
-        """Called at the start of each session. Returns context notes.
+    def begin_turn(self, turn_idx: int) -> list[str]:
+        """Called at the start of each turn. Returns context notes.
 
-        Override in subclasses to provide environment-driven per-session
+        Override in subclasses to provide environment-driven per-turn
         context. Default: no-op returning empty list.
         """
         return []
@@ -74,8 +74,8 @@ class BaseEnvironment(ABC):
         """Per-env "RUN STRUCTURE" section prepended to the agent's
         system prompt.
 
-        Each environment fills in what one session means, what
-        ``today`` is, how a session ends, and any env-specific
+        Each environment fills in what one turn means, what
+        ``today`` is, how a turn ends, and any env-specific
         protocol notes. Default: empty string. Most envs now fold
         this content directly into their agent's ``sys_prompt`` and
         leave this default in place.
@@ -110,12 +110,12 @@ class BaseEnvironment(ABC):
         outer loop should exit early. Default: ``False``.
 
         Override for envs with a domain-specific failure mode (e.g.
-        vending bankruptcy after N consecutive negative-cash sessions).
+        vending bankruptcy after N consecutive negative-cash turns).
         """
         return False
 
-    def get_probes(self, session_idx: int) -> list[ProbeSpec]:
-        """Return probe questions scheduled for this session.
+    def get_probes(self, turn_idx: int) -> list[ProbeSpec]:
+        """Return probe questions scheduled for this turn.
 
         Override in subclasses. Default: no probes.
         """
@@ -164,8 +164,8 @@ class BaseEnvironment(ABC):
 class BaseDataSource(ABC):
     """Abstract external data source for an environment.
 
-    The only required method is :meth:`begin_session` (so the framework
-    can stage per-session input). The email + search channels have
+    The only required method is :meth:`begin_turn` (so the framework
+    can stage per-turn input). The email + search channels have
     no-op defaults — vending overrides them; chat-memory benchmarks
     leave them at the defaults.
     """
@@ -173,8 +173,8 @@ class BaseDataSource(ABC):
     # ---------- required ----------
 
     @abstractmethod
-    def begin_session(self, session_idx: int, env: BaseEnvironment) -> list[str]:
-        """Start a new session; return any notes/briefing for the agent."""
+    def begin_turn(self, turn_idx: int, env: BaseEnvironment) -> list[str]:
+        """Start a new turn; return any notes/briefing for the agent."""
 
     # ---------- optional channels (default: disabled) ----------
 
@@ -187,7 +187,7 @@ class BaseDataSource(ABC):
         to: str,
         subject: str,
         body: str,
-        session_idx: int,
+        turn_idx: int,
         env: BaseEnvironment,
     ) -> str:
         """Send an email and return the response/confirmation.

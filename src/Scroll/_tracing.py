@@ -98,8 +98,10 @@ class _OpenInferenceRewriter(SpanExporter):
                 return "chain"
             return "llm_chat"
         if (
-            name.startswith("session.") or name.startswith("day.")
-            or name in ("env.step_session", "agent.run_session",
+            name.startswith("turn.") or name.startswith("session.")
+            or name.startswith("day.")
+            or name in ("env.step_turn", "agent.run_turn",
+                        "env.step_session", "agent.run_session",
                         "env.step_day", "agent.run_day")
         ):
             return "chain"

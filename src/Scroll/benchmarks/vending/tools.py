@@ -25,7 +25,7 @@ def send_email(state: ToolState, to: str, subject: str, body: str):
     state._tick()
     result = state.data.send_email(
         to=to, subject=subject, body=body,
-        session_idx=state.env.session_idx, env=state.env,
+        turn_idx=state.env.turn_idx, env=state.env,
     )
     state._action_log.append(f"send_email to={to} subject={subject}")
     return _resp(result)

@@ -1,17 +1,18 @@
 """LongMemEvalEnv — non-economic, session-streaming env.
 
-A run answers a single QA item. ``begin_session(session_idx)`` exposes
-the ``session_idx``-th haystack session (sorted by date) as a briefing
+A run answers a single QA item. ``begin_turn(turn_idx)`` exposes
+the ``turn_idx``-th haystack chat session (sorted by date) as a briefing
 note + caches the structured turns on the env so agents can ingest the
-session into their data store. ``step_session`` advances to the next
-session and runs no scoring of its own — the only scored event is
-the end-of-history probe wired up in :mod:`tasks.probes`.
+chat session into their data store. ``step_turn`` advances to the next
+chat session and runs no scoring of its own — the only scored event
+is the end-of-history probe wired up in :mod:`tasks.probes`.
 
 Probe wiring lives in :mod:`tasks.probes`: at construction time we
 register the loaded item as the *active probe target*, so
-``get_probes_for_session(N)`` (where ``N == total_sessions``) returns
-one ProbeSpec for this run. This is set per-run because the question
-and its haystack length are item-specific.
+``get_probes_for_turn(N)`` (where ``N == total_sessions + 1``)
+returns one ProbeSpec for this run. This is set per-run because the
+question and its haystack length are item-specific. PR #4 retires
+the ``+1 probe-only turn`` trick in favor of an end-of-task probe.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from typing import Any
 
-from Scroll.core import BaseEnvironment, SessionResult, EnvSnapshot
+from Scroll.core import BaseEnvironment, TurnResult, EnvSnapshot
 from Scroll.benchmarks.longmemeval.datasource import (
     LongMemEvalItem,
     load_items,
@@ -39,16 +40,16 @@ class LongMemEvalEnvConfig:
     sessions is streamed session-by-session to the agent, and a final
     probe with the QA's question fires after the last session.
 
-    ``num_sessions`` is set automatically by the env to
-    ``len(haystack_sessions) + 1`` (the +1 is the probe-only session)
+    ``num_turns`` is set automatically by the env to
+    ``len(haystack_sessions) + 1`` (the +1 is the probe-only turn)
     once the QA item is loaded; the value in the JSON config is treated
-    as a safety upper bound (the session-loop also exits via
+    as a safety upper bound (the turn-loop also exits via
     :meth:`LongMemEvalEnv.is_terminal`).
     """
 
-    # Upper bound on the session count; the env overwrites this with the
-    # loaded item's actual session count + 1.
-    num_sessions: int = 100
+    # Upper bound on the turn count; the env overwrites this with the
+    # loaded item's actual chat-session count + 1.
+    num_turns: int = 100
 
     # Path to the LongMemEval JSON file. Three official variants:
     #   - longmemeval_oracle.json     (only evidence sessions; smoke-test)
@@ -77,13 +78,16 @@ class LongMemEvalEnvConfig:
     def from_dict(cls, d: dict) -> "LongMemEvalEnvConfig":
         """Construct from a raw config dict.
 
-        Accepts the legacy ``"days"`` key as a synonym for
-        ``"num_sessions"`` so older configs continue to parse.
+        Accepts the legacy ``"days"`` / ``"num_sessions"`` keys as
+        synonyms for ``"num_turns"`` so older configs continue to parse.
         """
         known = {f.name for f in fields(cls)}
         normalized = dict(d)
-        if "num_sessions" not in normalized and "days" in normalized:
-            normalized["num_sessions"] = normalized["days"]
+        if "num_turns" not in normalized:
+            if "num_sessions" in normalized:
+                normalized["num_turns"] = normalized.pop("num_sessions")
+            elif "days" in normalized:
+                normalized["num_turns"] = normalized["days"]
         return cls(**{k: v for k, v in normalized.items() if k in known})
 
 
@@ -104,7 +108,7 @@ class LongMemEvalEnv(BaseEnvironment):
     def __init__(self, cfg: LongMemEvalEnvConfig, seed: int) -> None:
         self.cfg = cfg
         self.seed = seed
-        self.session_idx = 0
+        self.turn_idx = 0
 
         # Memory optimization: when running per-QA via ``question_id``,
         # ``load_items`` auto-detects per-QA shards (~500KB each) under
@@ -117,13 +121,15 @@ class LongMemEvalEnv(BaseEnvironment):
             items, cfg.question_id, cfg.question_index
         )
 
-        # Mutate cfg.num_sessions so the session-loop runs ``total_sessions``
-        # ingestion iterations PLUS one extra "probe session" with no
+        # Mutate cfg.num_turns so the turn-loop runs ``total_sessions``
+        # ingestion iterations PLUS one extra "probe turn" with no
         # haystack content. The probe fires at end-of-iteration on the
-        # probe session, in a clean(er) history that doesn't share
+        # probe turn, in a clean(er) history that doesn't share
         # context with any single haystack session's ingest activity.
         # ``is_terminal`` is updated to allow the +1 iteration through.
-        cfg.num_sessions = self.item.total_sessions + 1
+        # PR #4 drops this +1 trick in favor of ``ingest_all`` + an
+        # end-of-task probe.
+        cfg.num_turns = self.item.total_sessions + 1
 
         self._current_session: list[dict] | None = None
         self._current_session_id: str | None = None
@@ -136,21 +142,23 @@ class LongMemEvalEnv(BaseEnvironment):
         _probes.set_active_probe(self.item, cfg)
 
     # ------------------------------------------------------------------
-    # Per-session API
+    # Per-turn API
     # ------------------------------------------------------------------
 
-    def begin_session(self, session_idx: int) -> list[str]:
+    def begin_turn(self, turn_idx: int) -> list[str]:
         """Stage the next haystack session.
 
-        Called by the datasource (and through it the session-loop) at the
-        start of each session, *before* ``agent.run_session``. Returns a
+        Called by the datasource (and through it the turn-loop) at the
+        start of each turn, *before* ``agent.run_turn``. Returns a
         list of briefing lines that the framework prepends to the agent's
-        session prompt as ``Today's briefing``.
+        turn prompt as ``Today's briefing``.
 
-        ``session_idx`` is the env's current session counter
-        (``env.session_idx``), 0 at the first call.
+        ``turn_idx`` is the env's current turn counter
+        (``env.turn_idx``), 0 at the first call. Today, ``turn_idx``
+        also indexes directly into ``haystack_sessions``; PR #4
+        decouples them.
         """
-        idx = session_idx
+        idx = turn_idx
         if idx >= self.item.total_sessions:
             self._current_session = None
             self._current_session_id = None
@@ -169,15 +177,15 @@ class LongMemEvalEnv(BaseEnvironment):
         self._today_logs = notes
         return list(notes)
 
-    def step_session(self) -> SessionResult:
-        """Advance to the next session.
+    def step_turn(self) -> TurnResult:
+        """Advance to the next turn.
 
-        LME has no economic state — ``SessionResult`` carries zeros and
-        the only meaningful side-effect is incrementing ``self.session_idx``.
+        LME has no economic state — ``TurnResult`` carries zeros and
+        the only meaningful side-effect is incrementing ``self.turn_idx``.
         """
-        self.session_idx += 1
-        return SessionResult(
-            session_idx=self.session_idx,
+        self.turn_idx += 1
+        return TurnResult(
+            turn_idx=self.turn_idx,
             sold_units=0,
             revenue=0.0,
             machine_cash=0.0,
@@ -187,11 +195,11 @@ class LongMemEvalEnv(BaseEnvironment):
     # ``today_logs`` / ``net_worth`` inherit the BaseEnvironment defaults
     # (``[]`` and ``0.0``) — LME is a passive observation env with no
     # outcomes or economic state. ``_today_logs`` is still maintained
-    # for ``build_snapshot`` / session-log consumers.
+    # for ``build_snapshot`` / turn-log consumers.
 
     def visible_state(self) -> dict:
         return {
-            "session_idx": self.session_idx,
+            "turn_idx": self.turn_idx,
             "total_sessions": self.item.total_sessions,
             "current_session_id": self._current_session_id,
             "current_session_date": self._current_session_date,
@@ -202,11 +210,11 @@ class LongMemEvalEnv(BaseEnvironment):
         }
 
     def is_terminal(self) -> bool:
-        # Allow exactly one iteration past the last session for the
-        # probe-only session (see ``__init__``: cfg.num_sessions is
-        # total_sessions+1). Becomes terminal AFTER the probe session
-        # has run.
-        return self.session_idx > self.item.total_sessions
+        # Allow exactly one iteration past the last chat session for the
+        # probe-only turn (see ``__init__``: cfg.num_turns is
+        # total_sessions+1). Becomes terminal AFTER the probe turn
+        # has run. PR #4 retires this trick (probe becomes end-of-task).
+        return self.turn_idx > self.item.total_sessions
 
     def substrate_endgame_prompt(self) -> str:
         return _LME_SUBSTRATE_ENDGAME
@@ -221,7 +229,7 @@ class LongMemEvalEnv(BaseEnvironment):
 
     def build_snapshot(self) -> EnvSnapshot:
         return EnvSnapshot(
-            session_idx=self.session_idx,
+            turn_idx=self.turn_idx,
             logs=list(self._today_logs),
             extra={
                 "session_id": self._current_session_id,
@@ -264,7 +272,7 @@ class LongMemEvalEnv(BaseEnvironment):
 
     def to_checkpoint(self) -> dict:
         return {
-            "session_idx": self.session_idx,
+            "turn_idx": self.turn_idx,
             "seed": self.seed,
             "question_id": self.item.question_id,
             "today_logs": list(self._today_logs),
@@ -278,6 +286,6 @@ class LongMemEvalEnv(BaseEnvironment):
         # configs at the checkpoint loader level.
         cfg.question_id = data["question_id"]
         env = cls(cfg, seed=data.get("seed", 0))
-        env.session_idx = data["session_idx"]
+        env.turn_idx = data.get("turn_idx", data.get("session_idx", 0))
         env._today_logs = list(data.get("today_logs") or [])
         return env

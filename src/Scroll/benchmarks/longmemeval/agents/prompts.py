@@ -240,11 +240,11 @@ ms — memoryspace handle (read-only — see _STRATEGY_PROMPT):
 ────────────────────────────────────────────────────────────────────
 log — LogHandle, unified event stream:
 
-  Each ``LogEntry`` has attrs ``e.session_idx``, ``e.role``,
-  ``e.content``, ``e.metadata`` (dict). ``e.session_idx`` is the
-  cross-env session counter. ``kind`` lives in
-  ``e.metadata.get('kind')``: {chat_turn, lm_turn, code, stdout,
-  rlm_call, rlm_result}.
+  Each ``LogEntry`` has attrs ``e.turn_idx`` (``e.session_idx`` is
+  an accepted back-compat alias), ``e.role``, ``e.content``,
+  ``e.metadata`` (dict). ``e.turn_idx`` is the cross-env turn
+  counter. ``kind`` lives in ``e.metadata.get('kind')``:
+  {chat_turn, lm_turn, code, stdout, rlm_call, rlm_result}.
 
   log.slice(session_idx=None, role=None, kind=None) -> list[LogEntry]
   log.range_by_session(start: int, end: int)        -> list[LogEntry]  # inclusive

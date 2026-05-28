@@ -134,7 +134,8 @@ the harness from each day's events — you only READ. The schema is
 fixed; you don't need to introspect it.
 
 KEY NAMING — ``day`` is the 1-indexed business day number, same as
-``today`` in the REPL and ``session_idx`` in log entries.
+``today`` in the REPL and ``turn_idx`` in log entries (``session_idx``
+is an accepted alias for back-compat).
 
   sales(                                       -- ⭐ revenue questions
       day      INTEGER NOT NULL,
@@ -224,7 +225,8 @@ ms — memoryspace handle (READ-ONLY; schema in _VENDING_AUTO_LAYOUT):
 ────────────────────────────────────────────────────────────────────
 log — LogHandle, unified event stream:
 
-  Each ``LogEntry`` has attrs ``e.session_idx`` (= day), ``e.role``,
+  Each ``LogEntry`` has attrs ``e.turn_idx`` (= day; ``e.session_idx``
+  is an accepted alias), ``e.role``,
   ``e.content``, ``e.metadata`` (dict). ``kind`` lives in
   ``e.metadata.get('kind')``: {briefing_note, env_log, inbox_mail,
   env_snapshot, code, stdout, rlm_call, rlm_result}.
@@ -320,7 +322,7 @@ SYSTEM_PROMPT = (
 
 
 # =============================================================================
-# Per-day session prompt
+# Per-day turn prompt
 # =============================================================================
 
 

@@ -1,7 +1,7 @@
 """Harness bookkeeping: ``ToolState`` and the ``ToolResponse`` helper.
 
-Tracks per-session counters, action log, and accumulated LM usage
-across the agent's session-loop calls. Lives in ``core/`` because
+Tracks per-turn counters, action log, and accumulated LM usage
+across the agent's turn-loop calls. Lives in ``core/`` because
 it's harness state, not an agent-facing data surface. The legacy
 env-side closures (in ``vending/tools.py``) still return AgentScope
 ``ToolResponse`` objects internally; the namespace builder unwraps
@@ -72,32 +72,43 @@ class ToolState:
     data: object | None = None
     cfg: object | None = None
 
-    # Session lifecycle
-    _session_ended: bool = False
+    # Turn lifecycle
+    _turn_ended: bool = False
     _message_count: int = 0
     _action_log: list[str] = field(default_factory=list)
     _sub_agent_log: list[str] = field(default_factory=list)
 
     # Token + LM-call accounting (lifetime, persisted in checkpoint).
     # Populated via ``_record_lm_usage`` from the model wrapper —
-    # captures BOTH session-loop / probe-time agent calls AND rlm
+    # captures BOTH turn-loop / probe-time agent calls AND rlm
     # calls (they share the same wrapped model object).
     _lm_calls: int = 0
     _prompt_tokens: int = 0
     _completion_tokens: int = 0
 
-    def reset_session(self) -> None:
-        """Reset per-session transient state (called at start of each session).
+    # Back-compat alias for callers (legacy code paths) that still
+    # read ``_session_ended``. Drop in PR #6.
+    @property
+    def _session_ended(self) -> bool:
+        return self._turn_ended
+
+    @_session_ended.setter
+    def _session_ended(self, value: bool) -> None:
+        self._turn_ended = bool(value)
+
+    def reset_turn(self) -> None:
+        """Reset per-turn transient state (called at start of each turn).
 
         ``_message_count`` and the LM-token counters survive — they're
         lifetime budget / cost counters.
         """
-        self._session_ended = False
+        self._turn_ended = False
         self._action_log = []
         self._sub_agent_log = []
 
-    # Back-compat alias for callers that still use the old name.
-    reset_day = reset_session
+    # Back-compat aliases for callers that still use the old names.
+    reset_session = reset_turn
+    reset_day = reset_turn
 
     def _tick(self) -> None:
         self._message_count += 1

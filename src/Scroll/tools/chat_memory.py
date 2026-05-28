@@ -91,15 +91,15 @@ def make_time_range_extractor(
     return extract_time_range
 
 
-def probe_session_body(session_idx: int) -> str:
-    """Universal probe-session body (used on session N+1).
+def probe_turn_body(turn_idx: int) -> str:
+    """Universal probe-turn body (used on turn N+1).
 
-    The probe session has no haystack content — the agent should
+    The probe turn has no haystack content — the agent should
     advance immediately by emitting a response with no Python code
-    block. The probe fires right after the session ends.
+    block. The probe fires right after the turn ends.
     """
     return (
-        f"Session {session_idx}: PROBE SESSION. Reply with NO Python "
+        f"Turn {turn_idx}: PROBE TURN. Reply with NO Python "
         "code block to advance immediately. The probe will fire right "
         "after. Any cell here (data fetches, inspections, prep) is "
         "wasted compute — the probe-time prompt will give you "
@@ -107,9 +107,13 @@ def probe_session_body(session_idx: int) -> str:
     )
 
 
+# Back-compat alias; drop in PR #6.
+probe_session_body = probe_turn_body
+
+
 def handle_only_body() -> str:
-    """Session-loop body pointing the agent at the unified log for the
-    current session. ``LongMemEvalAgent`` auto-advances and rarely sees
+    """Turn-loop body pointing the agent at the unified log for the
+    current chat session. ``LongMemEvalAgent`` auto-advances and rarely sees
     this body; BEAM does see it on haystack-session turns.
     """
     return (
@@ -118,8 +122,8 @@ def handle_only_body() -> str:
         "``LogEntry`` objects) or ``today_session()`` (native "
         "dicts). Past sessions: ``log.slice(session_idx=N, "
         "kind=\"chat_turn\")``.\n\n"
-        "Apply your session-loop contract (system prompt). When you "
-        "have no more actions for this session, reply with NO Python "
+        "Apply your turn-loop contract (system prompt). When you "
+        "have no more actions for this turn, reply with NO Python "
         "code block to advance."
     )
 
@@ -137,11 +141,11 @@ def handle_only_body() -> str:
 # ---------------------------------------------------------------------------
 
 
-def write_chat_turn_entries(log, env, session_idx: int) -> int:
+def write_chat_turn_entries(log, env, turn_idx: int) -> int:
     """Mirror the current chat session into the unified log as one
-    ``kind="chat_turn"`` entry per turn. Idempotent — if the session's
-    chat_turn entries already exist (e.g. on checkpoint resume), no
-    new entries are written.
+    ``kind="chat_turn"`` entry per chat message. Idempotent — if the
+    chat session's chat_turn entries already exist (e.g. on checkpoint
+    resume), no new entries are written.
 
     Each entry's metadata carries ``session_date`` (raw string) and
     ``session_date_iso`` (parsed ISO date, or ``None`` if unparseable)
@@ -149,16 +153,21 @@ def write_chat_turn_entries(log, env, session_idx: int) -> int:
     visit Y") can resolve calendar dates from the log alone, without
     requiring the agent to have stored a date column in its memoryspace.
 
+    The metadata's per-message ``turn_idx`` is the position within
+    the chat session (i.e. the LME/BEAM dataset's own ``turn_idx``
+    column); the LogEntry's top-level ``turn_idx`` is the framework
+    turn this chat session is being ingested on.
+
     Returns the number of entries written this call.
     """
     session = getattr(env, "current_session", None)
     if not session:
         return 0
 
-    # Idempotency guard: skip if any chat_turn entry for this session
+    # Idempotency guard: skip if any chat_turn entry for this turn
     # already exists in the log (resume case, or accidental double-call).
     for e in log.entries:
-        if e.turn_idx == session_idx and (e.metadata or {}).get("kind") == "chat_turn":
+        if e.turn_idx == turn_idx and (e.metadata or {}).get("kind") == "chat_turn":
             return 0
 
     meta = getattr(env, "current_session_meta", {}) or {}
@@ -175,8 +184,8 @@ def write_chat_turn_entries(log, env, session_idx: int) -> int:
             session_date_iso = None
 
     written = 0
-    for turn_idx, turn in enumerate(session):
-        md: dict[str, Any] = {"kind": "chat_turn", "turn_idx": turn_idx}
+    for chat_turn_idx, turn in enumerate(session):
+        md: dict[str, Any] = {"kind": "chat_turn", "turn_idx": chat_turn_idx}
         if session_date_raw is not None:
             md["session_date"] = str(session_date_raw)
         if session_date_iso is not None:
@@ -184,7 +193,7 @@ def write_chat_turn_entries(log, env, session_idx: int) -> int:
         if session_id is not None:
             md["session_id"] = str(session_id)
         log.append(LogEntry.make(
-            turn_idx=session_idx,
+            turn_idx=turn_idx,
             role=str(turn.get("role", "user")),
             content=str(turn.get("content", "")),
             metadata=md,
@@ -203,7 +212,9 @@ def _make_today_session(agent) -> Callable[[], list[dict[str, Any]]]:
 
     def today_session() -> list[dict[str, Any]]:
         log = getattr(agent, "log", None)
-        today = getattr(agent, "_current_session", None)
+        # Accept either ``_current_turn`` (new) or ``_current_session`` (legacy
+        # subclasses that haven't migrated yet — back-compat for one release).
+        today = getattr(agent, "_current_turn", getattr(agent, "_current_session", None))
         if log is None or today is None:
             return []
         out: list[dict[str, Any]] = []
