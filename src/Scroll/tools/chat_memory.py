@@ -158,7 +158,7 @@ def write_chat_turn_entries(log, env, session_idx: int) -> int:
     # Idempotency guard: skip if any chat_turn entry for this session
     # already exists in the log (resume case, or accidental double-call).
     for e in log.entries:
-        if e.session_idx == session_idx and (e.metadata or {}).get("kind") == "chat_turn":
+        if e.turn_idx == session_idx and (e.metadata or {}).get("kind") == "chat_turn":
             return 0
 
     meta = getattr(env, "current_session_meta", {}) or {}
@@ -184,7 +184,7 @@ def write_chat_turn_entries(log, env, session_idx: int) -> int:
         if session_id is not None:
             md["session_id"] = str(session_id)
         log.append(LogEntry.make(
-            session_idx=session_idx,
+            turn_idx=session_idx,
             role=str(turn.get("role", "user")),
             content=str(turn.get("content", "")),
             metadata=md,
@@ -209,7 +209,7 @@ def _make_today_session(agent) -> Callable[[], list[dict[str, Any]]]:
         out: list[dict[str, Any]] = []
         for e in log.entries:
             md = e.metadata or {}
-            if e.session_idx == today and md.get("kind") == "chat_turn":
+            if e.turn_idx == today and md.get("kind") == "chat_turn":
                 out.append({
                     "role": e.role,
                     "content": e.content,

@@ -569,7 +569,7 @@ class CodeActAgent(BaseAgent):
         # Mirror the session-start user prompt into E (matches the legacy
         # SlidingMemory.add path).
         self.log.append(LogEntry.make(
-            session_idx=self._current_session,
+            turn_idx=self._current_session,
             role="user",
             content=prompt,
         ))
@@ -699,7 +699,7 @@ class CodeActAgent(BaseAgent):
             self._history.append(assistant_msg)
 
             self.log.append(LogEntry.make(
-                session_idx=self._current_session,
+                turn_idx=self._current_session,
                 role="assistant",
                 content=text,
                 metadata={
@@ -946,7 +946,7 @@ class CodeActAgent(BaseAgent):
         """
         cell_id = f"cell-{self._current_session}-{iter_idx}"
         self.log.append(LogEntry.make(
-            session_idx=self._current_session,
+            turn_idx=self._current_session,
             role="assistant",
             tool_call={
                 "id": cell_id,
@@ -965,7 +965,7 @@ class CodeActAgent(BaseAgent):
             "\n[session ended]" if result.session_ended else ""
         )
         self.log.append(LogEntry.make(
-            session_idx=self._current_session,
+            turn_idx=self._current_session,
             role="tool",
             tool_result={
                 "id": cell_id,
@@ -997,7 +997,7 @@ class CodeActAgent(BaseAgent):
         """
         cell_id = f"probe-cell-{self._current_session}-{iter_idx}"
         self.log.append(LogEntry.make(
-            session_idx=self._current_session,
+            turn_idx=self._current_session,
             role="assistant",
             content=thought or "",
             tool_call={
@@ -1015,7 +1015,7 @@ class CodeActAgent(BaseAgent):
             ("\n[exception]\n" + result.exception) if result.exception else ""
         )
         self.log.append(LogEntry.make(
-            session_idx=self._current_session,
+            turn_idx=self._current_session,
             role="tool",
             tool_result={
                 "id": cell_id,

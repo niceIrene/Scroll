@@ -155,7 +155,7 @@ def make_dspy_rlm(
             day = int(day_provider()) if day_provider is not None else 0
             state["counter"] += 1
             call_id = f"rlm-{day}-{state['counter']}"
-            log.append(LogEntry.make(session_idx=day, role="assistant",
+            log.append(LogEntry.make(turn_idx=day, role="assistant",
                 tool_call={
                     "id": call_id, "name": "rlm",
                     "arguments": {
@@ -169,7 +169,7 @@ def make_dspy_rlm(
                     "context_chars": len(context_str),
                 },
             ))
-            log.append(LogEntry.make(session_idx=day, role="tool",
+            log.append(LogEntry.make(turn_idx=day, role="tool",
                 tool_result={
                     "id": call_id, "name": "rlm",
                     "output": _cap_for_log(answer_str, _RLM_OUTPUT_PERSIST_CAP, "answer"),

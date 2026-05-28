@@ -127,7 +127,7 @@ class VendingAgent(ScrollAgent):
         # Briefing notes — one entry per note.
         for note in notes:
             self.log.append(LogEntry.make(
-                session_idx=session_idx, role="system",
+                turn_idx=session_idx, role="system",
                 content=str(note),
                 metadata={"kind": "briefing_note"},
             ))
@@ -138,7 +138,7 @@ class VendingAgent(ScrollAgent):
             for idx in range(self._emitted_inbox_count, len(inbox_list)):
                 mail = inbox_list[idx]
                 self.log.append(LogEntry.make(
-                    session_idx=session_idx, role="system",
+                    turn_idx=session_idx, role="system",
                     content=f"from={getattr(mail, 'source', None)} "
                             f"subject={getattr(mail, 'subject', '')}",
                     metadata={
@@ -152,14 +152,14 @@ class VendingAgent(ScrollAgent):
         """Land per-day env outcome lines AND a single env snapshot into E."""
         for line in logs:
             self.log.append(LogEntry.make(
-                session_idx=session_idx, role="system",
+                turn_idx=session_idx, role="system",
                 content=str(line),
                 metadata={"kind": "env_log"},
             ))
         env = self._tool_state.env
         if env is not None:
             self.log.append(LogEntry.make(
-                session_idx=session_idx, role="system",
+                turn_idx=session_idx, role="system",
                 content=f"env_snapshot day={session_idx}",
                 metadata={
                     "kind": "env_snapshot",

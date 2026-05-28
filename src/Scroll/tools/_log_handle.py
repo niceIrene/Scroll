@@ -88,7 +88,9 @@ class LogHandle:
         """Return entries matching ``session_idx`` and/or ``role`` and/or ``kind``.
 
         Args:
-            session_idx: Restrict to entries whose ``.session_idx == session_idx``.
+            session_idx: Restrict to entries whose ``.turn_idx == session_idx``.
+                (Param name kept for agent-prompt back-compat; reads
+                from the renamed ``LogEntry.turn_idx`` field.)
             role: Restrict to entries whose ``.role == role``
                 (one of ``"system"``, ``"user"``, ``"assistant"``, ``"tool"``).
             kind: Restrict to entries whose ``metadata.kind == kind``
@@ -100,7 +102,7 @@ class LogHandle:
             session_idx = day
         out: list[LogEntry] = []
         for e in self._log.entries:
-            if session_idx is not None and e.session_idx != session_idx:
+            if session_idx is not None and e.turn_idx != session_idx:
                 continue
             if role is not None and e.role != role:
                 continue
@@ -110,8 +112,8 @@ class LogHandle:
         return out
 
     def range_by_session(self, start: int, end: int) -> list[LogEntry]:
-        """Return entries with ``start <= entry.session_idx <= end``."""
-        return [e for e in self._log.entries if start <= e.session_idx <= end]
+        """Return entries with ``start <= entry.turn_idx <= end``."""
+        return [e for e in self._log.entries if start <= e.turn_idx <= end]
 
     # Back-compat alias — agent system prompts mention ``range_by_day``.
     range_by_day = range_by_session
@@ -194,7 +196,7 @@ class LogHandle:
                 "customer complaints about delivery delays", k=5,
                 role="user",
             ):
-                print(f"session {entry.session_idx} score={score:.2f} :: "
+                print(f"session {entry.turn_idx} score={score:.2f} :: "
                       f"{(entry.content or '')[:80]}")
         """
         if session_idx is None and day is not None:
@@ -231,7 +233,7 @@ class LogHandle:
         role: str | None,
         kind: str | None,
     ) -> bool:
-        if session_idx is not None and entry.session_idx != session_idx:
+        if session_idx is not None and entry.turn_idx != session_idx:
             return False
         if role is not None and entry.role != role:
             return False
@@ -340,7 +342,7 @@ class LogHandle:
         seq = list(entries) if entries is not None else list(self._log.entries)
         lines: list[str] = []
         for e in seq:
-            prefix = f"[session {e.session_idx} | {e.role}]"
+            prefix = f"[session {e.turn_idx} | {e.role}]"
             if e.tool_call:
                 name = (e.tool_call or {}).get("name", "?")
                 args = (e.tool_call or {}).get("arguments", {})

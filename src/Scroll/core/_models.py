@@ -14,9 +14,17 @@ class LogEntry:
     The log mirrors the agent's chat turns (system prompt, user prompts,
     assistant responses, tool calls, tool results, compression summaries).
     Entries are append-only and persisted to conversation_log.jsonl.
+
+    ``turn_idx`` is which env time-slice this entry belongs to (vending
+    day, LME chat-session-during-ingest, BEAM batch-during-ingest, or
+    the framework turn number once the agent is in a session). The field
+    was previously named ``session_idx``; the old name is kept as a
+    read-only property + accepted by ``make()`` / ``from_dict()`` /
+    dict-style access so existing agent REPL code and persisted JSONL
+    logs continue to work.
     """
 
-    session_idx: int
+    turn_idx: int
     ts: float
     role: str  # "system" | "user" | "assistant" | "tool"
     content: str = ""
@@ -24,18 +32,34 @@ class LogEntry:
     tool_result: dict | None = None  # {id, name, output}     when role="tool"
     metadata: dict = field(default_factory=dict)
 
+    @property
+    def session_idx(self) -> int:
+        """Deprecated alias for :attr:`turn_idx`.
+
+        Kept so agent REPL code that learned ``e.session_idx`` from
+        earlier prompts still resolves. Will be dropped once those
+        prompts are updated.
+        """
+        return self.turn_idx
+
     @classmethod
     def make(
         cls,
-        session_idx: int,
-        role: str,
+        turn_idx: int | None = None,
+        role: str = "system",
         content: str = "",
         tool_call: dict | None = None,
         tool_result: dict | None = None,
         metadata: dict | None = None,
+        *,
+        session_idx: int | None = None,  # back-compat alias
     ) -> "LogEntry":
+        if turn_idx is None:
+            if session_idx is None:
+                raise TypeError("LogEntry.make requires turn_idx (or session_idx alias)")
+            turn_idx = session_idx
         return cls(
-            session_idx=session_idx,
+            turn_idx=turn_idx,
             ts=time.time(),
             role=role,
             content=content,
@@ -46,7 +70,7 @@ class LogEntry:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "session_idx": self.session_idx,
+            "turn_idx": self.turn_idx,
             "ts": self.ts,
             "role": self.role,
             "content": self.content,
@@ -60,26 +84,36 @@ class LogEntry:
     # ``log.entries``), since the conversation_log.jsonl on disk is dicts
     # and the docs read like a record. Without these the agent gets
     # ``AttributeError: 'LogEntry' object has no attribute 'get'`` and
-    # has to retry. Mapping access mirrors :meth:`to_dict` keys.
+    # has to retry. Mapping access mirrors :meth:`to_dict` keys, plus
+    # ``"session_idx"`` as a back-compat alias for ``"turn_idx"``.
     def get(self, key: str, default: Any = None) -> Any:
+        if key == "session_idx":
+            return self.turn_idx
         return self.to_dict().get(key, default)
 
     def __getitem__(self, key: str) -> Any:
+        if key == "session_idx":
+            return self.turn_idx
         try:
             return self.to_dict()[key]
         except KeyError as e:
             raise KeyError(
                 f"LogEntry has no field {key!r}; valid keys: "
-                f"session_idx, ts, role, content, tool_call, tool_result, metadata"
+                f"turn_idx, ts, role, content, tool_call, tool_result, metadata"
             ) from e
 
     def __contains__(self, key: str) -> bool:
-        return key in self.to_dict()
+        return key == "session_idx" or key in self.to_dict()
 
     @classmethod
     def from_dict(cls, d: dict) -> "LogEntry":
+        # Accept ``turn_idx`` (new) or ``session_idx`` (legacy on-disk
+        # logs from before the rename). One-of must be present.
+        raw = d.get("turn_idx")
+        if raw is None:
+            raw = d.get("session_idx", 0)
         return cls(
-            session_idx=int(d["session_idx"]),
+            turn_idx=int(raw),
             ts=float(d.get("ts", 0.0)),
             role=str(d.get("role", "system")),
             content=str(d.get("content", "")),

@@ -315,14 +315,16 @@ class LMEIngestor(Ingestor):
         self.ms = ms
 
     def consume(self, entries: Iterable[LogEntry]) -> None:
-        # Group chat_turn entries by session_idx; preserve the
-        # original order within each session.
+        # Group chat_turn entries by turn_idx (= chat-session-idx, since
+        # the LME chat-history loader emits one entry per chat-session
+        # message with that chat session's index as the LogEntry's
+        # turn_idx). Preserve original order within each session.
         by_session: dict[int, list[LogEntry]] = {}
         for entry in entries:
             kind = (entry.metadata or {}).get("kind")
             if kind != "chat_turn":
                 continue
-            by_session.setdefault(entry.session_idx, []).append(entry)
+            by_session.setdefault(entry.turn_idx, []).append(entry)
 
         if not by_session:
             return

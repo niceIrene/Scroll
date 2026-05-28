@@ -183,7 +183,7 @@ class VendingIngestor(Ingestor):
         for entry in entries:
             meta = entry.metadata or {}
             kind = meta.get("kind")
-            day = entry.session_idx
+            day = entry.turn_idx
             if kind == "briefing_note":
                 ctx_notes.setdefault(day, []).append(str(entry.content))
             elif kind == "env_log":
@@ -220,7 +220,7 @@ class VendingIngestor(Ingestor):
             subject = str(md.get("subject", ""))
             body = str(md.get("body", ""))
             idx = int(md.get("idx", 0))
-            day = mail_entry.session_idx
+            day = mail_entry.turn_idx
             _ingest_supplier_prices_from_mail(conn, source, subject, body)
             self.ms.vectors.add(
                 f"email_day_{day}_idx_{idx}",

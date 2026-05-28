@@ -277,7 +277,7 @@ class ScrollAgent(CodeActAgent):
         from Scroll.core._models import LogEntry
         for note in notes:
             self.log.append(LogEntry.make(
-                session_idx=session_idx, role="system",
+                turn_idx=session_idx, role="system",
                 content=str(note),
                 metadata={"kind": "briefing_note"},
             ))
@@ -292,7 +292,7 @@ class ScrollAgent(CodeActAgent):
         from Scroll.core._models import LogEntry
         for line in logs:
             self.log.append(LogEntry.make(
-                session_idx=session_idx, role="system",
+                turn_idx=session_idx, role="system",
                 content=str(line),
                 metadata={"kind": "env_log"},
             ))
