@@ -103,16 +103,39 @@ def ensure_schema(ms: Memoryspace) -> None:
 
 
 class BeamIngestor(LMEIngestor):
-    """E → W for BEAM.
+    """env → E → W for BEAM.
 
     Inherits from :class:`LMEIngestor` — the consume/group/extract
     pipeline is identical, but BEAM keeps the typed-extraction layer
     on (preferences / facts / event_dates / session_text) because
     BEAM's prompt + schema still reference those tables. LME's
     default is ``extract_typed=False``.
+
+    Overrides :meth:`bootstrap` to walk ``env.item.batches`` instead
+    of LME's ``env.item.haystack_sessions``.
     """
 
     extract_typed = True
+
+    def bootstrap(self, env, log) -> None:
+        """Bulk-stage every batch's chat turns into ``E``.
+
+        Iterates ``env.item.batches`` in chronological order; for each
+        batch, calls :meth:`BeamEnv.begin_turn` to stage it on the
+        env and :func:`write_chat_turn_entries` to mirror its turns
+        into ``log`` as ``kind="chat_turn"`` entries. No-op under
+        the legacy ``env.cfg.agent_during_ingestion=True`` path.
+        """
+        if getattr(env.cfg, "agent_during_ingestion", False):
+            return
+        from Scroll.tools.chat_memory import write_chat_turn_entries
+        for idx in range(env.item.num_batches):
+            env.begin_turn(idx)
+            write_chat_turn_entries(log, env, idx + 1)
+        env._current_batch_turns = None
+        env._current_batch_idx = None
+        env._current_time_anchor = None
+        env._today_logs = []
 
 
 __all__ = ["BeamIngestor", "ensure_schema"]

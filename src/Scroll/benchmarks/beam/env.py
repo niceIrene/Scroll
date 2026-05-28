@@ -140,37 +140,9 @@ class BeamEnv(BaseEnvironment):
         return self.turn_idx > self.item.num_batches
 
     # ------------------------------------------------------------------
-    # Task lifecycle (PR #5: SCROLL-pure ingestion path)
+    # Task lifecycle (PR #7: env exposes data only; BeamIngestor.bootstrap
+    # owns the env → E bulk-load step)
     # ------------------------------------------------------------------
-
-    def ingest_all(self, log) -> None:
-        """Bulk-stage every batch's chat turns into ``E`` (the agent's
-        :class:`ConversationLog`).
-
-        Loops the chat's batches in chronological order; for each
-        batch, calls :meth:`begin_turn` to stage it on the env and
-        :func:`write_chat_turn_entries` to mirror its turns into ``E``
-        as ``kind="chat_turn"`` entries. The attached
-        :class:`BeamIngestor` will catch up lazily on the first
-        ``ms`` read at probe time, deriving ``W`` from the whole chat
-        in one shot.
-
-        No-op under the legacy ``agent_during_ingestion=True`` path
-        (the agent's per-turn ``run_turn`` does the same work
-        iteratively).
-        """
-        if self.cfg.agent_during_ingestion:
-            return
-        from Scroll.tools.chat_memory import write_chat_turn_entries
-        for idx in range(self.item.num_batches):
-            self.begin_turn(idx)
-            write_chat_turn_entries(log, self, idx + 1)
-        # Reset the staged-batch pointers so post-ingest accessors
-        # don't see the last batch as "still current."
-        self._current_batch_turns = None
-        self._current_batch_idx = None
-        self._current_time_anchor = None
-        self._today_logs = []
 
     def get_end_of_task_probes(self):
         """Return the chat's M probing questions, all fired at end-of-task.

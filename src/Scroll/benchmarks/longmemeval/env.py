@@ -229,37 +229,9 @@ class LongMemEvalEnv(BaseEnvironment):
         return self.turn_idx > self.item.total_sessions
 
     # ------------------------------------------------------------------
-    # Task lifecycle (PR #4: SCROLL-pure ingestion path)
+    # Task lifecycle (PR #7: env exposes data only; LMEIngestor.bootstrap
+    # owns the env → E bulk-load step)
     # ------------------------------------------------------------------
-
-    def ingest_all(self, log) -> None:
-        """Bulk-stage every haystack chat session into ``E`` (the agent's
-        :class:`ConversationLog`).
-
-        Iterates the QA item's haystack in chronological order; for
-        each chat session, calls :meth:`begin_turn` to stage it on
-        the env and then :func:`write_chat_turn_entries` to mirror
-        its turns into ``E`` as ``kind="chat_turn"`` entries. The
-        attached :class:`LMEIngestor` will catch up lazily on the
-        first ``ms`` read at probe time, deriving ``W`` from the
-        whole haystack in one shot.
-
-        No-op under the legacy ``agent_during_ingestion=True`` path
-        (the agent's per-turn ``run_turn`` does the same work
-        iteratively).
-        """
-        if self.cfg.agent_during_ingestion:
-            return
-        from Scroll.tools.chat_memory import write_chat_turn_entries
-        for idx in range(self.item.total_sessions):
-            self.begin_turn(idx)
-            write_chat_turn_entries(log, self, idx + 1)
-        # Reset the staged-session pointers so post-ingest accessors
-        # don't see the last chat session as "still current."
-        self._current_session = None
-        self._current_session_id = None
-        self._current_session_date = None
-        self._today_logs = []
 
     def get_end_of_task_probes(self):
         """Return the QA item's single probe, fired at end-of-task.

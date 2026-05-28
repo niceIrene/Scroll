@@ -70,23 +70,6 @@ class BaseEnvironment(ABC):
         """
         return []
 
-    def ingest_all(self, log) -> None:
-        """Hook fired once at task start, before any agent session.
-
-        Default no-op. Envs whose data is "given upfront" — every
-        historical chat present at task start, no real-time interaction
-        — override this to append the whole haystack into ``E`` (the
-        ``log`` argument is the agent's :class:`ConversationLog`).
-        The ingestor then derives ``W`` lazily on first ``ms`` access.
-        Pairs with ``num_turns = 0`` + a single end-of-task probe;
-        see PR #4 (LME) and PR #5 (BEAM).
-
-        Vending stays turn-by-turn (data lands in ``E`` via
-        :meth:`begin_turn` / :meth:`step_turn` outcome logs each day),
-        so the no-op default is correct for it.
-        """
-        return None
-
     def get_end_of_task_probes(self) -> list[ProbeSpec]:
         """Return probes that fire AFTER the last turn, not on a turn.
 

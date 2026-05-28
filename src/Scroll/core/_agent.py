@@ -47,13 +47,32 @@ class BaseAgent(ABC):
 
     last_context: list[str]
 
+    def bootstrap(self, env: BaseEnvironment) -> None:
+        """Hook fired once per task, BEFORE ``start_session``.
+
+        Owns the task-wide env→E ingestion step. Default no-op.
+        :class:`ScrollAgent` overrides to delegate to its memoryspace's
+        attached ingestor — so the actual env-specific bulk-load
+        code (LME haystack, BEAM batches) lives in the ingestor, not
+        the agent.
+
+        Distinct from :meth:`start_session` so that ``probe_isolation
+        ="fresh"`` (BEAM) can spawn fresh agent sessions per probe
+        without re-running ingest each time. Ingest happens once;
+        start_session may happen multiple times.
+        """
+        return None
+
     def start_session(self) -> None:
         """Hook fired when a new agent session begins.
 
         Called once by the harness (``_run_task``) before the first
-        ``run_turn``. Default no-op. Subclasses override to wipe /
-        rebuild per-session state (e.g. ``LongMemEvalAgent`` reloading
-        cross-task distilled hints at session start).
+        ``run_turn``, and again per probe under
+        ``probe_isolation="fresh"``. Default no-op. Subclasses
+        override to wipe / rebuild per-session in-context state
+        (e.g. ``LongMemEvalAgent`` reloading cross-task distilled
+        hints at session start). Must be safe to call multiple
+        times in a task.
         """
         return None
 

@@ -194,6 +194,16 @@ class ScrollAgent(CodeActAgent):
         if self.ingestor_cls is not None:
             self.memoryspace.attach(self.log, self.ingestor_cls(self.memoryspace))
 
+    def bootstrap(self, env) -> None:
+        """Delegate task-wide ingest to the memoryspace's ingestor.
+
+        ``ingestor.bootstrap(env, log)`` is the single place
+        env-specific bulk loading lives (LME haystack, BEAM
+        batches). Vending's ingestor inherits the default no-op.
+        Called once per task by the harness before ``start_session``.
+        """
+        self.memoryspace.bootstrap(env, self.log)
+
     def receive_context(self, turn_idx: int, notes: list[str]) -> None:
         """Append briefing notes to E and let the ingestor catch up.
 

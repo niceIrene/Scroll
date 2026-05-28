@@ -284,21 +284,25 @@ def _extract_facts(text: str) -> list[tuple[str, str, str]]:
 
 
 class LMEIngestor(Ingestor):
-    """E → W for LongMemEval (and BEAM via :class:`BeamIngestor`).
+    """env → E → W for LongMemEval (and BEAM via :class:`BeamIngestor`).
 
-    Consumes ``kind="chat_turn"`` entries. Each entry carries
-    ``metadata = {session_id, session_date, session_date_iso, turn_idx}``;
-    the ingestor groups them by ``session_idx`` and emits:
+    Owns both directions of the pipeline:
 
-      - one ``chat_turns`` row per turn,
-      - one ``sessions`` row per session,
-      - per-turn + per-session vector entries,
-      - and (only when ``extract_typed=True``) per-turn
-        ``user_preferences`` / ``facts`` / ``event_dates`` rows plus
-        a ``sessions.session_text`` full-transcript column.
+      - :meth:`bootstrap` — at task start, walks the env's haystack
+        (``env.item.haystack_sessions``) and writes ``kind="chat_turn"``
+        entries into ``E``. Skipped under the legacy
+        ``cfg.agent_during_ingestion=True`` path, where the agent's
+        per-turn ``run_turn`` does the same work iteratively.
+      - :meth:`consume` — derives ``W`` from any new ``chat_turn``
+        entries (groups by ``turn_idx``, emits one ``chat_turns`` row
+        per chat turn, one ``sessions`` row per chat session, per-turn
+        + per-session vector entries, and — when ``extract_typed=True``
+        — per-turn ``user_preferences`` / ``facts`` / ``event_dates``
+        rows plus a ``sessions.session_text`` full-transcript column).
 
     Other entry kinds (``code_exec``, ``rlm_call``, ``briefing_note``,
-    etc.) are silently ignored — they don't carry chat data.
+    etc.) are silently ignored by ``consume`` — they don't carry chat
+    data.
 
     ``extract_typed`` controls the typed-value extraction layer
     (preferences / facts / event_dates / session_text). Default is
@@ -313,6 +317,34 @@ class LMEIngestor(Ingestor):
 
     def __init__(self, ms: Memoryspace) -> None:
         self.ms = ms
+
+    def bootstrap(self, env, log) -> None:
+        """Bulk-stage every haystack chat session into ``E``.
+
+        Iterates the QA item's haystack in chronological order; for
+        each chat session, calls :meth:`LongMemEvalEnv.begin_turn` to
+        stage it on the env and then
+        :func:`Scroll.tools.chat_memory.write_chat_turn_entries` to
+        mirror its turns into ``log`` as ``kind="chat_turn"`` entries.
+        The lazy memoryspace catch-up will pick them up on the first
+        ``ms`` read at probe time.
+
+        Skipped (no-op) under ``env.cfg.agent_during_ingestion=True``
+        — the agent's per-turn ``run_turn`` does the same work
+        iteratively in that path. Drops the per-session staging
+        pointers after the loop so post-bootstrap env accessors don't
+        see the last chat session as "still current."
+        """
+        if getattr(env.cfg, "agent_during_ingestion", False):
+            return
+        from Scroll.tools.chat_memory import write_chat_turn_entries
+        for idx in range(env.item.total_sessions):
+            env.begin_turn(idx)
+            write_chat_turn_entries(log, env, idx + 1)
+        env._current_session = None
+        env._current_session_id = None
+        env._current_session_date = None
+        env._today_logs = []
 
     def consume(self, entries: Iterable[LogEntry]) -> None:
         # Group chat_turn entries by turn_idx (= chat-session-idx, since

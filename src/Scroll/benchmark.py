@@ -92,23 +92,29 @@ def _run_task(
     """Drive one task end-to-end. Returns active_turns.
 
     Task shape:
-      1. ``env.ingest_all()`` once — for envs whose haystack is given
-         upfront (PR #4 LME, PR #5 BEAM); no-op for vending.
+      1. ``agent.bootstrap(env)`` once — delegates to the ingestor's
+         ``bootstrap(env, log)``, which writes env's task-wide data
+         (LME haystack chat sessions, BEAM batches) into ``E``.
+         Vending's ingestor inherits the default no-op.
       2. ``agent.start_session()`` once — per-instance setup hook.
       3. Per-turn loop (``num_turns`` iterations or until
          ``env.is_terminal()``): begin_turn / receive_context /
          run_turn / step_turn / receive_outcomes / per-turn probes /
          checkpoint.
       4. ``env.get_end_of_task_probes()`` after the loop completes —
-         for envs that fire probes once at task end (LME, BEAM) rather
-         than scheduled on a turn.
-      5. ``agent.end_session()`` in ``finally`` — per-instance teardown.
+         for envs that fire probes once at task end (LME, BEAM)
+         rather than scheduled on a turn. Under ``probe_isolation
+         ="fresh"`` (BEAM), each probe past the first cycles
+         end_session/start_session — bootstrap is NOT re-run.
+      5. ``agent.end_session()`` in ``finally`` — per-instance
+         teardown.
 
-    All four hooks default to no-op / empty so the per-turn loop body
-    is the only thing executed today; PRs #4 / #5 wire the new shape
-    per-env.
+    ``bootstrap`` / ``start_session`` / ``end_session`` /
+    ``get_end_of_task_probes`` all default to no-op / empty; vending
+    uses only the per-turn loop body, LME/BEAM use bootstrap +
+    end-of-task probes with a zero-iteration turn loop.
     """
-    env.ingest_all(log)
+    agent.bootstrap(env)
     agent.start_session()
     active_turns = 0
     try:
