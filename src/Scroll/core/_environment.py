@@ -70,6 +70,35 @@ class BaseEnvironment(ABC):
         """
         return []
 
+    def ingest_all(self) -> None:
+        """Hook fired once at task start, before any agent session.
+
+        Default no-op. Envs whose data is "given upfront" — every
+        historical chat present at task start, no real-time interaction
+        — override this to append the whole haystack into ``E`` in one
+        shot. The ingestor then derives ``W`` lazily on first ``ms``
+        access. Pairs with ``num_turns = 0`` + a single end-of-task
+        probe; see PR #4 (LME) and PR #5 (BEAM).
+
+        Today every shipped env uses turn-by-turn ingestion (data lands
+        in ``E`` via :meth:`begin_turn` / :meth:`step_turn` outcome
+        logs), so the default is correct for the current behavior.
+        """
+        return None
+
+    def get_end_of_task_probes(self) -> list[ProbeSpec]:
+        """Return probes that fire AFTER the last turn, not on a turn.
+
+        Default: empty. Envs that today use the ``+1 probe-only turn``
+        trick (LME, BEAM) will move their probes here in PRs #4 / #5
+        and drop the trick.
+
+        Probes returned here fire in the same agent session as the
+        last turn (cheap, shared in-context history). Future ``probe
+        isolation`` modes (PR #6) can spawn a fresh session per probe.
+        """
+        return []
+
     def substrate_endgame_prompt(self) -> str:
         """Per-env "RUN STRUCTURE" section prepended to the agent's
         system prompt.

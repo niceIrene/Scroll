@@ -34,9 +34,39 @@ class BaseAgent(ABC):
 
     Every agent — heuristic or LLM-based — follows the same per-turn
     cycle: ``receive_context → run_turn → receive_outcomes``.
+
+    A *session* (= agent-instance lifetime) wraps the per-turn cycle.
+    Today every env runs exactly one session per task, but the
+    ``start_session`` / ``end_session`` hooks let future multi-session
+    envs (or the BEAM ``probe_isolation="fresh"`` mode in PR #6) spawn
+    a fresh agent context per session without changing the per-turn
+    cycle. Both hooks default to no-ops; subclasses override for
+    per-instance setup / teardown (cross-task store flushes, distilled-
+    playbook reloads, etc.).
     """
 
     last_context: list[str]
+
+    def start_session(self) -> None:
+        """Hook fired when a new agent session begins.
+
+        Called once by the harness (``_run_task``) before the first
+        ``run_turn``. Default no-op. Subclasses override to wipe /
+        rebuild per-session state (e.g. ``LongMemEvalAgent`` reloading
+        cross-task distilled hints at session start).
+        """
+        return None
+
+    def end_session(self) -> None:
+        """Hook fired when an agent session ends.
+
+        Called once by the harness (``_run_task``) after the last
+        ``run_turn`` and any end-of-task probes. Default no-op.
+        Subclasses override for per-instance teardown (e.g. flushing
+        distilled hints out to the cross-task store, releasing
+        connections held by a sub-LM client).
+        """
+        return None
 
     @abstractmethod
     def run_turn(self, env: BaseEnvironment) -> list[str]:

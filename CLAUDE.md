@@ -32,7 +32,7 @@ src/Scroll/                     # framework
 │                               make_chat_memory_namespace, write_chat_turn_entries,
 │                               make_time_range_extractor
 ├── log.py                      ConversationLog (E, append-only JSONL)
-├── benchmark.py                run_single, _run_turn_loop, aggregate
+├── benchmark.py                run_single, _run_task, aggregate
 ├── cli.py                      `Scroll` CLI entry point (incl. `rebuild-w`)
 ├── _tracing.py                 OTel setup
 ├── __init__.py, __main__.py
@@ -97,7 +97,9 @@ Three nesting levels, all named consistently in the code (renamed in PR #2 of th
 
 - **Task** — one Scroll run, one `run_single` invocation (one LME QA, one Vending sim, one BEAM chat). One persisted `E`, one derived `W`.
 - **Session** — one agent-instance lifetime. Crossing this boundary = spawn a new `Agent(...)`; in-context history is wiped; only persisted `E` / `W` survive. Today every env runs as exactly **one** session per task. The substrate API for that boundary is `start_session` / `end_session` (added in PR #3).
-- **Turn** — one CodeAct exchange: one user prompt → agent commits via `done()` or hits `max_iters_per_turn`. Carries `turn_idx` on `LogEntry`, `BaseEnvironment.turn_idx`, `_run_turn_loop`, `step_turn`, `run_turn`. For LME today = one past chat session (PR #4 makes ingestion turn-less); for Vending = one calendar day (vending's SQL still uses a `day` column as a domain field, mapped 1:1 from `turn_idx` inside `VendingIngestor`); for BEAM today = one chat batch (PR #5 same). The agent config field is **`max_iters_per_turn`** — bounds the inner CodeAct loop, i.e. how many LLM calls (+ tool execs) the agent may take inside a single turn before being forced to commit.
+- **Turn** — one CodeAct exchange: one user prompt → agent commits via `done()` or hits `max_iters_per_turn`. Carries `turn_idx` on `LogEntry`, `BaseEnvironment.turn_idx`, `_run_task` (the per-task driver), `step_turn`, `run_turn`. For LME today = one past chat session (PR #4 makes ingestion turn-less); for Vending = one calendar day (vending's SQL still uses a `day` column as a domain field, mapped 1:1 from `turn_idx` inside `VendingIngestor`); for BEAM today = one chat batch (PR #5 same). The agent config field is **`max_iters_per_turn`** — bounds the inner CodeAct loop, i.e. how many LLM calls (+ tool execs) the agent may take inside a single turn before being forced to commit.
+
+`_run_task` drives one task as `env.ingest_all()` → `agent.start_session()` → per-turn loop (begin_turn / receive_context / run_turn / step_turn / receive_outcomes / per-turn probes / checkpoint) → `env.get_end_of_task_probes()` → `agent.end_session()` (in `finally`). Today `ingest_all` / `get_end_of_task_probes` / `start_session` / `end_session` all default to no-ops, so only the per-turn loop body runs. PRs #4 / #5 wire the new hooks per-env (LME / BEAM move ingestion into `ingest_all` and the probe into `get_end_of_task_probes`).
 
 ## Workflow
 

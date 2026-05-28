@@ -80,7 +80,7 @@ def _truncate_turn_log(output_dir, resume_turn):
     path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
 
 
-def _run_turn_loop(
+def _run_task(
     env,
     agent,
     data,
@@ -97,77 +97,117 @@ def _run_turn_loop(
     output_dir: str | None = None,
     cfg_hash: str = "",
 ) -> int:
-    """Turn-count based loop. Returns active_turns."""
+    """Drive one task end-to-end. Returns active_turns.
+
+    Task shape:
+      1. ``env.ingest_all()`` once — for envs whose haystack is given
+         upfront (PR #4 LME, PR #5 BEAM); no-op for vending.
+      2. ``agent.start_session()`` once — per-instance setup hook.
+      3. Per-turn loop (``num_turns`` iterations or until
+         ``env.is_terminal()``): begin_turn / receive_context /
+         run_turn / step_turn / receive_outcomes / per-turn probes /
+         checkpoint.
+      4. ``env.get_end_of_task_probes()`` after the loop completes —
+         for envs that fire probes once at task end (LME, BEAM) rather
+         than scheduled on a turn.
+      5. ``agent.end_session()`` in ``finally`` — per-instance teardown.
+
+    All four hooks default to no-op / empty so the per-turn loop body
+    is the only thing executed today; PRs #4 / #5 wire the new shape
+    per-env.
+    """
+    env.ingest_all()
+    agent.start_session()
     active_turns = 0
     try:
-     for _ in range(env_cfg.num_turns):
-      with _tracer.start_as_current_span(f"turn.{env.turn_idx + 1}") as turn_span:
-        if is_llm:
-            print(
-                f"\r  [{policy}] seed={seed} turn {env.turn_idx + 1}/{env_cfg.num_turns} ...",
-                end="",
-                flush=True,
-            )
-        ds_notes = data.begin_turn(env.turn_idx, env)
-        agent.receive_context(env.turn_idx, ds_notes)
+        try:
+            for _ in range(env_cfg.num_turns):
+                with _tracer.start_as_current_span(f"turn.{env.turn_idx + 1}") as turn_span:
+                    if is_llm:
+                        print(
+                            f"\r  [{policy}] seed={seed} turn {env.turn_idx + 1}/{env_cfg.num_turns} ...",
+                            end="",
+                            flush=True,
+                        )
+                    ds_notes = data.begin_turn(env.turn_idx, env)
+                    agent.receive_context(env.turn_idx, ds_notes)
 
-        with _tracer.start_as_current_span("agent.run_turn"):
-            actions = agent.run_turn(env)
+                    with _tracer.start_as_current_span("agent.run_turn"):
+                        actions = agent.run_turn(env)
 
-        per_turn_action_logs.append(list(actions))
+                    per_turn_action_logs.append(list(actions))
 
-        with _tracer.start_as_current_span("env.step_turn") as env_span:
-            turn_res = env.step_turn()
-            env_span.set_attributes({
-                "env.revenue": round(turn_res.revenue, 2),
-                "env.units_sold": turn_res.sold_units,
-            })
-        logs = env.today_logs()
-        agent.receive_outcomes(turn_res.turn_idx, logs)
+                    with _tracer.start_as_current_span("env.step_turn") as env_span:
+                        turn_res = env.step_turn()
+                        env_span.set_attributes({
+                            "env.revenue": round(turn_res.revenue, 2),
+                            "env.units_sold": turn_res.sold_units,
+                        })
+                    logs = env.today_logs()
+                    agent.receive_outcomes(turn_res.turn_idx, logs)
 
-        snapshots.append(env.build_snapshot())
+                    snapshots.append(env.build_snapshot())
 
-        # Persist full per-turn log for debugging / querying
-        if output_dir:
-            _append_turn_log(
-                output_dir, turn_res.turn_idx, ds_notes, actions, logs, snapshots[-1],
-            )
+                    # Persist full per-turn log for debugging / querying
+                    if output_dir:
+                        _append_turn_log(
+                            output_dir, turn_res.turn_idx, ds_notes, actions, logs, snapshots[-1],
+                        )
 
-        # Inject probes if scheduled for this turn
-        probes = get_probes_for_turn(turn_res.turn_idx)
-        if probes and is_llm:
-            for probe in probes:
-                result = inject_probe(agent, probe, snapshots, data)
-                probe_results.append(result)
+                    # Inject probes if scheduled for this turn
+                    probes = get_probes_for_turn(turn_res.turn_idx)
+                    if probes and is_llm:
+                        for probe in probes:
+                            result = inject_probe(agent, probe, snapshots, data)
+                            probe_results.append(result)
 
-        if turn_res.sold_units > 0:
-            active_turns += 1
+                    if turn_res.sold_units > 0:
+                        active_turns += 1
 
-        turn_span.set_attributes({
-            "turn.number": turn_res.turn_idx,
-            "turn.revenue": round(turn_res.revenue, 2),
-            "turn.units_sold": turn_res.sold_units,
-            "turn.cash": round(turn_res.cash, 2),
-            "turn.net_worth": round(env.net_worth(), 2),
-        })
+                    turn_span.set_attributes({
+                        "turn.number": turn_res.turn_idx,
+                        "turn.revenue": round(turn_res.revenue, 2),
+                        "turn.units_sold": turn_res.sold_units,
+                        "turn.cash": round(turn_res.cash, 2),
+                        "turn.net_worth": round(env.net_worth(), 2),
+                    })
 
-        # Save checkpoint after each turn
-        if checkpoint and output_dir:
-            loop_state = {
-                "active_turns": active_turns,
-                "loop_type": "turn",
-            }
-            save_checkpoint(
-                output_dir, turn_res.turn_idx, env, data, agent, log,
-                loop_state, policy, seed, cfg_hash,
-            )
+                    # Save checkpoint after each turn
+                    if checkpoint and output_dir:
+                        loop_state = {
+                            "active_turns": active_turns,
+                            "loop_type": "turn",
+                        }
+                        save_checkpoint(
+                            output_dir, turn_res.turn_idx, env, data, agent, log,
+                            loop_state, policy, seed, cfg_hash,
+                        )
 
-        if env.is_terminal():
-            break
-    except KeyboardInterrupt:
-        print("\nInterrupted — checkpoint already saved for last completed turn.")
-        raise
+                    if env.is_terminal():
+                        break
+
+            # Turn loop completed (no interrupt). Fire any end-of-task
+            # probes. Empty by default — LME / BEAM override
+            # ``env.get_end_of_task_probes`` in PRs #4 / #5.
+            eot_probes = env.get_end_of_task_probes()
+            if eot_probes and is_llm:
+                with _tracer.start_as_current_span("end_of_task_probes"):
+                    for probe in eot_probes:
+                        result = inject_probe(agent, probe, snapshots, data)
+                        probe_results.append(result)
+        except KeyboardInterrupt:
+            print("\nInterrupted — checkpoint already saved for last completed turn.")
+            raise
+    finally:
+        # ``end_session`` always fires — even on interrupt — so
+        # subclasses can flush per-instance state (distilled hints to
+        # cross-task store, etc.) without leaking on Ctrl+C.
+        agent.end_session()
     return active_turns
+
+
+# Back-compat alias; drop in PR #6.
+_run_turn_loop = _run_task
 
 
 def run_single(
@@ -321,15 +361,17 @@ def _run_single_inner(
     is_llm = agent_cfg.policy not in ("heuristic",)
 
     try:
-        # LongMemEval has a fixed-length turn loop (N ingestion turns + 1
-        # probe turn) governed by env.is_terminal(); always use the
-        # turn-count loop.
+        # ``_run_task`` drives ingest_all + start_session + the per-turn
+        # loop + end-of-task probes + end_session for one task. Today
+        # every env's per-turn loop is the only piece doing work
+        # (ingest_all / get_end_of_task_probes default to no-op); PR #4
+        # (LME) and PR #5 (BEAM) wire the new hooks per-env.
         # When ``keep_logs`` is False, hide ``output_dir`` from the
-        # turn loop so it skips writing ``session_logs.jsonl``
-        # (and per-turn checkpoint subdirs). ``probe_results.json``
-        # is written outside this call, so it's unaffected.
+        # task driver so it skips writing ``session_logs.jsonl`` (and
+        # per-turn checkpoint subdirs). ``probe_results.json`` is
+        # written outside this call, so it's unaffected.
         loop_output_dir = output_dir if keep_logs else None
-        active_turns = _run_turn_loop(
+        active_turns = _run_task(
             env, agent, data, log, env_cfg,
             is_llm, policy, seed, snapshots, probe_results,
             per_turn_action_logs,
