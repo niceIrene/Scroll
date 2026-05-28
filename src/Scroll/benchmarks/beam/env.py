@@ -54,10 +54,20 @@ class BeamEnv(BaseEnvironment):
             cfg.dataset_root, cfg.scale, cfg.chat_id,
         )
 
-        # ``num_turns`` = num_batches + 1 probe turn (matches LME's shape).
-        # PR #5 retires this trick in favor of ``ingest_all`` + end-of-task
-        # probes.
-        cfg.num_turns = self.item.num_batches + 1
+        # PR #5: under the new SCROLL-pure path
+        # (``cfg.agent_during_ingestion=False``, the default), every
+        # batch is bulk-loaded into ``E`` by :meth:`ingest_all` at task
+        # start and probes fire end-of-task — so ``num_turns = 0`` and
+        # the per-turn loop never runs.
+        #
+        # Under the legacy path (``cfg.agent_during_ingestion=True``),
+        # we keep today's behavior: ``num_turns = num_batches + 1``,
+        # one batch per iteration, and the virtual ``+1`` probe-only
+        # turn. ``is_terminal`` allows the +1 iteration through.
+        if cfg.agent_during_ingestion:
+            cfg.num_turns = self.item.num_batches + 1
+        else:
+            cfg.num_turns = 0
 
         self._current_batch_turns: list[dict] | None = None
         self._current_batch_idx: int | None = None
@@ -122,9 +132,56 @@ class BeamEnv(BaseEnvironment):
         }
 
     def is_terminal(self) -> bool:
-        # Allow exactly one iteration past the last batch for the probe
-        # turn; becomes terminal after probes fire.
+        # Legacy path (``agent_during_ingestion=True``): allow exactly
+        # one iteration past the last batch for the probe-only turn.
+        # New path (``agent_during_ingestion=False``): num_turns is 0
+        # so the per-turn loop never enters; this method's return
+        # value is irrelevant in practice.
         return self.turn_idx > self.item.num_batches
+
+    # ------------------------------------------------------------------
+    # Task lifecycle (PR #5: SCROLL-pure ingestion path)
+    # ------------------------------------------------------------------
+
+    def ingest_all(self, log) -> None:
+        """Bulk-stage every batch's chat turns into ``E`` (the agent's
+        :class:`ConversationLog`).
+
+        Loops the chat's batches in chronological order; for each
+        batch, calls :meth:`begin_turn` to stage it on the env and
+        :func:`write_chat_turn_entries` to mirror its turns into ``E``
+        as ``kind="chat_turn"`` entries. The attached
+        :class:`BeamIngestor` will catch up lazily on the first
+        ``ms`` read at probe time, deriving ``W`` from the whole chat
+        in one shot.
+
+        No-op under the legacy ``agent_during_ingestion=True`` path
+        (the agent's per-turn ``run_turn`` does the same work
+        iteratively).
+        """
+        if self.cfg.agent_during_ingestion:
+            return
+        from Scroll.tools.chat_memory import write_chat_turn_entries
+        for idx in range(self.item.num_batches):
+            self.begin_turn(idx)
+            write_chat_turn_entries(log, self, idx + 1)
+        # Reset the staged-batch pointers so post-ingest accessors
+        # don't see the last batch as "still current."
+        self._current_batch_turns = None
+        self._current_batch_idx = None
+        self._current_time_anchor = None
+        self._today_logs = []
+
+    def get_end_of_task_probes(self):
+        """Return the chat's M probing questions, all fired at end-of-task.
+
+        Empty under the legacy ``agent_during_ingestion=True`` path —
+        probes still ride on the ``+1`` per-turn registry there.
+        """
+        if self.cfg.agent_during_ingestion:
+            return []
+        from Scroll.benchmarks.beam.tasks import probes as _probes
+        return list(_probes._active_probes)
 
     def substrate_endgame_prompt(self) -> str:
         return _BEAM_SUBSTRATE_ENDGAME

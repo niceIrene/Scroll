@@ -136,6 +136,8 @@ Two entry points:
 
 **Task shape** (PR #4 of loop redesign): under the default `simulation.agent_during_ingestion=false`, an LME task is `env.ingest_all(log)` (bulk-writes all ~50 historical chat sessions into `E` in one shot) → `num_turns=0` (per-turn loop skipped) → `env.get_end_of_task_probes()` fires the single QA probe. Set `simulation.agent_during_ingestion=true` to fall back to the legacy per-turn ingestion path (`num_turns = total_sessions + 1`, agent's `run_turn` mirrors one chat session per iteration, probe on the `+1` turn) — useful if the new path regresses on a particular config; PR #6 drops the flag once the production sweep validates parity.
 
+BEAM has the same shape (PR #5 of loop redesign): default `simulation.agent_during_ingestion=false`, `env.ingest_all(log)` bulk-writes every batch into `E`, all M probing questions fire end-of-task via `env.get_end_of_task_probes()`. Set `simulation.agent_during_ingestion=true` for the legacy `num_batches + 1` path.
+
 Output for the orchestrator lands under
 `output/longmemeval/<policy>_<seed>_<hash8>/qa_<question_id>/` (per QA) plus
 `hypotheses.jsonl` + `summary.json` at the run root.
