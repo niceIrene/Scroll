@@ -17,6 +17,7 @@ an extra system message at every ``_call_model``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -264,7 +265,7 @@ def _wrap_closure_for_repl(fn):
     Preserves async-ness. The wrapped function keeps the closure's
     name, docstring, and signature (via ``functools.wraps``).
     """
-    if asyncio.iscoroutinefunction(fn):
+    if inspect.iscoroutinefunction(fn):
         @wraps(fn)
         async def async_wrapper(*args, **kwargs):
             return _strategy_to_user_text(await fn(*args, **kwargs))
@@ -1297,7 +1298,7 @@ class CodeActAgent(BaseAgent):
                     continue
                 break
 
-            day_ended = False
+            turn_ended = False
             for idx, block in enumerate(tool_use_blocks):
                 tc_id = tool_calls_payload[idx]["id"]
                 tc_args = json.loads(
@@ -1398,10 +1399,10 @@ class CodeActAgent(BaseAgent):
                     "content": result.to_user_message(),
                 })
                 if result.turn_ended:
-                    day_ended = True
+                    turn_ended = True
                     break
 
-            if day_ended:
+            if turn_ended:
                 break
 
         # Fallback for agents that put ``print(f"Answer: ...")`` inside

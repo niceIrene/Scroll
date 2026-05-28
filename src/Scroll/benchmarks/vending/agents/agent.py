@@ -175,8 +175,8 @@ class VendingAgent(ScrollAgent):
     # older turns once the conversation grows).
 
     def answer_probe(self, question: str) -> str:
-        old_day_ended = self._tool_state._session_ended
-        self._tool_state._session_ended = False
+        old_turn_ended = self._tool_state._turn_ended
+        self._tool_state._turn_ended = False
 
         # Bind ``probe_question`` so REPL code can embed it directly in
         # rlm prompts. Restored in the finally block.
@@ -193,7 +193,7 @@ class VendingAgent(ScrollAgent):
         except Exception as e:  # noqa: BLE001
             answer = f"[probe error: {e}]"
         finally:
-            self._tool_state._session_ended = old_day_ended
+            self._tool_state._turn_ended = old_turn_ended
             if pq_was_present:
                 self._runtime.globals["probe_question"] = old_pq
             else:

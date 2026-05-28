@@ -370,7 +370,7 @@ class LongMemEvalAgent(ScrollAgent):
                     continue
                 break
 
-            day_ended = False
+            turn_ended = False
             for idx, block in enumerate(tool_use_blocks):
                 tc_id = tool_calls_payload[idx]["id"]
                 tc_args = json.loads(
@@ -498,10 +498,10 @@ class LongMemEvalAgent(ScrollAgent):
                     "tool_call_id": tc_id,
                     "content": result.to_user_message() + budget_tag,
                 })
-                if result.day_ended:
-                    day_ended = True
+                if result.turn_ended:
+                    turn_ended = True
                     break
-            if day_ended:
+            if turn_ended:
                 break
 
         # Budget-exhaustion grace turn. ~45% of pre-fix failures were
