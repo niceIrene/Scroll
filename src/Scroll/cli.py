@@ -9,12 +9,7 @@ from pathlib import Path
 import agentscope
 
 from Scroll.benchmark import aggregate, run_single
-from Scroll.core import (
-    load_config,
-    parse_env_config,
-    parse_agent_config,
-    expand_ablations,
-)
+from Scroll.core import AgentConfig, get_env
 from Scroll.core._checkpoint import config_hash
 
 
@@ -198,89 +193,82 @@ def main() -> None:
         # We manage tracing ourselves, so set the flag directly.
         agentscope._config.trace_enabled = True
 
-    raw_config = load_config(Path(args.config))
-    ablation_variants = expand_ablations(raw_config)
+    raw_config = json.loads(Path(args.config).read_text())
+    env_id = raw_config.get("environment", "vending")
+    env_cfg = get_env(env_id).parse_env_config(raw_config["simulation"])
+    agent_cfg = AgentConfig.from_dict(raw_config["agent"])
+    bench = raw_config["benchmark"]
+    data_cfg = raw_config.get("data_sources", {})
+
+    single_run = args.seed is not None
+    seeds = [args.seed] if args.seed is not None else bench["seeds"]
+    cfg_hash = config_hash(raw_config)
 
     all_results = []
+    results = []
+    try:
+        for seed in seeds:
+            if args.output_dir:
+                out_dir = Path(args.output_dir)
+            else:
+                out_dir = _output_dir(env_id, agent_cfg.policy, seed, cfg_hash)
+            out_dir.mkdir(parents=True, exist_ok=True)
 
-    for label, variant_config in ablation_variants:
-        env_id = variant_config.get("environment", "vending")
-        env_cfg = parse_env_config(variant_config, env_id)
-        agent_cfg = parse_agent_config(variant_config)
-        bench = variant_config["benchmark"]
-        data_cfg = variant_config.get("data_sources", {})
-
-        if len(ablation_variants) > 1:
-            print(f"\n--- Ablation: {label} ---")
-
-        single_run = args.seed is not None
-        seeds = [args.seed] if args.seed is not None else bench["seeds"]
-        cfg_hash = config_hash(variant_config)
-
-        results = []
-        try:
-            for seed in seeds:
-                if args.output_dir:
-                    out_dir = Path(args.output_dir)
-                else:
-                    out_dir = _output_dir(env_id, agent_cfg.policy, seed, cfg_hash)
-                out_dir.mkdir(parents=True, exist_ok=True)
-
-                # Write resolved config for reproducibility
-                (out_dir / "config.json").write_text(
-                    json.dumps(variant_config, indent=2, default=str),
-                    encoding="utf-8",
-                )
-
-                run = run_single(
-                    seed,
-                    env_cfg,
-                    agent_cfg,
-                    data_cfg=data_cfg,
-                    fresh=args.fresh,
-                    checkpoint=not args.no_checkpoint,
-                    output_dir=str(out_dir),
-                    env_id=env_id,
-                )
-                results.append(run)
-                all_results.append(run)
-                # Per-run line: universal fields + each env_metrics key.
-                env_metric_str = " ".join(
-                    f"{k}={v}" for k, v in run.env_metrics.items()
-                )
-                print(
-                    f"run policy={run.strategy:>16} seed={run.seed} "
-                    f"active_turns={run.active_turns:3d} "
-                    f"probe_score={run.probe_avg_score:.3f}"
-                    + (f" | {env_metric_str}" if env_metric_str else "")
-                )
-
-                # In single-run mode, write result for orchestrator collection
-                if single_run:
-                    (out_dir / "run_result.json").write_text(
-                        json.dumps(asdict(run), indent=2, default=str),
-                        encoding="utf-8",
-                    )
-        except KeyboardInterrupt:
-            print("\nRun interrupted. Resume with the same command.")
-
-        # Skip aggregation in single-run mode (orchestrator handles it)
-        if single_run:
-            continue
-
-        agg = aggregate(results)
-        print(f"\n=== aggregate ({label}) ===")
-        for policy, vals in agg.items():
-            parts = [f"{policy:>16}"] + [
-                f"{k}={v}" for k, v in vals.items()
-            ]
-            print(" | ".join(parts))
-
-        # Write aggregate results
-        if results:
-            agg_dir = Path("output")
-            agg_dir.mkdir(parents=True, exist_ok=True)
-            (agg_dir / f"aggregate_{label}.json").write_text(
-                json.dumps(agg, indent=2, default=str),
+            # Write resolved config for reproducibility
+            (out_dir / "config.json").write_text(
+                json.dumps(raw_config, indent=2, default=str),
                 encoding="utf-8",
             )
+
+            run = run_single(
+                seed,
+                env_cfg,
+                agent_cfg,
+                data_cfg=data_cfg,
+                fresh=args.fresh,
+                checkpoint=not args.no_checkpoint,
+                output_dir=str(out_dir),
+                env_id=env_id,
+            )
+            results.append(run)
+            all_results.append(run)
+            # Per-run line: universal fields + each env_metrics key.
+            env_metric_str = " ".join(
+                f"{k}={v}" for k, v in run.env_metrics.items()
+            )
+            print(
+                f"run policy={run.strategy:>16} seed={run.seed} "
+                f"active_turns={run.active_turns:3d} "
+                f"probe_score={run.probe_avg_score:.3f}"
+                + (f" | {env_metric_str}" if env_metric_str else "")
+            )
+
+            # In single-run mode, write result for orchestrator collection
+            if single_run:
+                (out_dir / "run_result.json").write_text(
+                    json.dumps(asdict(run), indent=2, default=str),
+                    encoding="utf-8",
+                )
+    except KeyboardInterrupt:
+        print("\nRun interrupted. Resume with the same command.")
+
+    # Skip aggregation in single-run mode (orchestrator handles it)
+    if single_run:
+        return
+
+    agg = aggregate(results)
+    print("\n=== aggregate ===")
+    for policy, vals in agg.items():
+        parts = [f"{policy:>16}"] + [
+            f"{k}={v}" for k, v in vals.items()
+        ]
+        print(" | ".join(parts))
+
+    # Write aggregate results
+    if results:
+        agg_dir = Path("output")
+        agg_dir.mkdir(parents=True, exist_ok=True)
+        (agg_dir / "aggregate.json").write_text(
+            json.dumps(agg, indent=2, default=str),
+            encoding="utf-8",
+        )

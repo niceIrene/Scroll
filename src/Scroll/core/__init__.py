@@ -34,7 +34,6 @@ from Scroll.core._codeact_agent import CodeActAgent
 from Scroll.core._scroll_agent import ScrollAgent
 from Scroll.core._ingestor import Ingestor
 from Scroll.core._checkpoint import serialize_rng, restore_rng
-from Scroll.core._runner import load_config, parse_env_config, parse_agent_config, apply_overrides, expand_ablations
 from Scroll.core._registry import get_env, register_env, EnvEntry
 
 __all__ = [
@@ -60,12 +59,6 @@ __all__ = [
     # checkpoint
     "serialize_rng",
     "restore_rng",
-    # runner
-    "load_config",
-    "parse_env_config",
-    "parse_agent_config",
-    "apply_overrides",
-    "expand_ablations",
     # registry
     "get_env",
     "register_env",

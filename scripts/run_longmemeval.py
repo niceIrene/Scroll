@@ -54,11 +54,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 from Scroll.benchmark import run_single  # noqa: E402
-from Scroll.core import (  # noqa: E402
-    load_config,
-    parse_env_config,
-    parse_agent_config,
-)
+from Scroll.core import AgentConfig, get_env  # noqa: E402
 from Scroll.core._checkpoint import config_hash  # noqa: E402
 
 
@@ -169,10 +165,7 @@ def _run_one_qa(job: dict) -> dict:
         _agentscope._config.trace_enabled = True
 
     from Scroll.benchmark import run_single as _run_single
-    from Scroll.core import (
-        parse_env_config as _parse_env_config,
-        parse_agent_config as _parse_agent_config,
-    )
+    from Scroll.core import AgentConfig as _AgentConfig, get_env as _get_env
 
     qid = job["qid"]
     qtype = job["qtype"]
@@ -182,8 +175,8 @@ def _run_one_qa(job: dict) -> dict:
     per_qa_cfg["simulation"]["question_id"] = qid
     per_qa_cfg["simulation"].pop("question_index", None)
 
-    env_cfg = _parse_env_config(per_qa_cfg, "longmemeval")
-    agent_cfg = _parse_agent_config(per_qa_cfg)
+    env_cfg = _get_env("longmemeval").parse_env_config(per_qa_cfg["simulation"])
+    agent_cfg = _AgentConfig.from_dict(per_qa_cfg["agent"])
     data_cfg = per_qa_cfg.get("data_sources", {})
 
     out_dir = Path(job["out_dir"])
@@ -387,7 +380,7 @@ def main() -> None:
     if args.tracing_url:
         agentscope._config.trace_enabled = True
 
-    raw_cfg = load_config(Path(args.config))
+    raw_cfg = json.loads(Path(args.config).read_text())
     env_id = raw_cfg.get("environment", "longmemeval")
     if env_id != "longmemeval":
         raise SystemExit(
