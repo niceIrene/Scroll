@@ -116,7 +116,7 @@ def _run_task(
     is the only thing executed today; PRs #4 / #5 wire the new shape
     per-env.
     """
-    env.ingest_all()
+    env.ingest_all(log)
     agent.start_session()
     active_turns = 0
     try:

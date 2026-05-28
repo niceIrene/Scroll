@@ -74,6 +74,19 @@ class LongMemEvalEnvConfig:
     judge_api_key_env: str = "CN_DASHSCOPE_API_KEY"
     judge_api_base: str | None = None
 
+    # PR #4 loop-redesign switch. When ``False`` (default, the new
+    # SCROLL-pure path): the env bulk-loads the haystack into ``E``
+    # at task start via :meth:`ingest_all`, ``cfg.num_turns`` is
+    # forced to ``0`` (no per-turn loop), and the probe fires once via
+    # :meth:`get_end_of_task_probes`. When ``True`` (legacy fallback):
+    # ``cfg.num_turns = total_sessions + 1``, the agent's per-turn
+    # ``run_turn`` mirrors one chat session into ``E`` per iteration,
+    # and the probe fires on the ``+1`` turn via the per-turn registry.
+    # Flag exists to back out PR #4 cleanly if the new path regresses
+    # judge scores in the parity sweep; PR #6 drops it once we've
+    # validated parity (or kept the legacy path on purpose).
+    agent_during_ingestion: bool = False
+
     @classmethod
     def from_dict(cls, d: dict) -> "LongMemEvalEnvConfig":
         """Construct from a raw config dict.
@@ -121,15 +134,21 @@ class LongMemEvalEnv(BaseEnvironment):
             items, cfg.question_id, cfg.question_index
         )
 
-        # Mutate cfg.num_turns so the turn-loop runs ``total_sessions``
-        # ingestion iterations PLUS one extra "probe turn" with no
-        # haystack content. The probe fires at end-of-iteration on the
-        # probe turn, in a clean(er) history that doesn't share
-        # context with any single haystack session's ingest activity.
-        # ``is_terminal`` is updated to allow the +1 iteration through.
-        # PR #4 drops this +1 trick in favor of ``ingest_all`` + an
-        # end-of-task probe.
-        cfg.num_turns = self.item.total_sessions + 1
+        # PR #4: under the new SCROLL-pure path
+        # (``cfg.agent_during_ingestion=False``, the default), the
+        # haystack is bulk-loaded into ``E`` by :meth:`ingest_all` at
+        # task start and the probe fires at end-of-task — so
+        # ``num_turns = 0`` and the per-turn loop never runs.
+        #
+        # Under the legacy path (``cfg.agent_during_ingestion=True``),
+        # we keep today's behavior: ``num_turns = total_sessions + 1``,
+        # one ingestion iteration per chat session, and a virtual
+        # ``+1`` probe-only turn. ``is_terminal`` allows the +1
+        # iteration through.
+        if cfg.agent_during_ingestion:
+            cfg.num_turns = self.item.total_sessions + 1
+        else:
+            cfg.num_turns = 0
 
         self._current_session: list[dict] | None = None
         self._current_session_id: str | None = None
@@ -210,11 +229,60 @@ class LongMemEvalEnv(BaseEnvironment):
         }
 
     def is_terminal(self) -> bool:
-        # Allow exactly one iteration past the last chat session for the
-        # probe-only turn (see ``__init__``: cfg.num_turns is
-        # total_sessions+1). Becomes terminal AFTER the probe turn
-        # has run. PR #4 retires this trick (probe becomes end-of-task).
+        # Legacy path (``agent_during_ingestion=True``): allow exactly
+        # one iteration past the last chat session for the probe-only
+        # turn (see ``__init__``: cfg.num_turns is total_sessions+1).
+        # Becomes terminal AFTER the probe turn has run.
+        # New path (``agent_during_ingestion=False``): num_turns is 0
+        # so the per-turn loop never enters; this method's return
+        # value is irrelevant in practice.
         return self.turn_idx > self.item.total_sessions
+
+    # ------------------------------------------------------------------
+    # Task lifecycle (PR #4: SCROLL-pure ingestion path)
+    # ------------------------------------------------------------------
+
+    def ingest_all(self, log) -> None:
+        """Bulk-stage every haystack chat session into ``E`` (the agent's
+        :class:`ConversationLog`).
+
+        Iterates the QA item's haystack in chronological order; for
+        each chat session, calls :meth:`begin_turn` to stage it on
+        the env and then :func:`write_chat_turn_entries` to mirror
+        its turns into ``E`` as ``kind="chat_turn"`` entries. The
+        attached :class:`LMEIngestor` will catch up lazily on the
+        first ``ms`` read at probe time, deriving ``W`` from the
+        whole haystack in one shot.
+
+        No-op under the legacy ``agent_during_ingestion=True`` path
+        (the agent's per-turn ``run_turn`` does the same work
+        iteratively).
+        """
+        if self.cfg.agent_during_ingestion:
+            return
+        from Scroll.tools.chat_memory import write_chat_turn_entries
+        for idx in range(self.item.total_sessions):
+            self.begin_turn(idx)
+            write_chat_turn_entries(log, self, idx + 1)
+        # Reset the staged-session pointers so post-ingest accessors
+        # don't see the last chat session as "still current."
+        self._current_session = None
+        self._current_session_id = None
+        self._current_session_date = None
+        self._today_logs = []
+
+    def get_end_of_task_probes(self):
+        """Return the QA item's single probe, fired at end-of-task.
+
+        Empty under the legacy ``agent_during_ingestion=True`` path —
+        the probe still rides on the ``+1`` per-turn registry there.
+        """
+        if self.cfg.agent_during_ingestion:
+            return []
+        from Scroll.benchmarks.longmemeval.tasks import probes as _probes
+        if _probes._active_probe is None:
+            return []
+        return [_probes._active_probe]
 
     def substrate_endgame_prompt(self) -> str:
         return _LME_SUBSTRATE_ENDGAME

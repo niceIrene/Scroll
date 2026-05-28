@@ -134,6 +134,8 @@ Two entry points:
 - `Scroll --config <cfg>` — runs **one** QA, the one pinned in the config (`simulation.question_index` or `simulation.question_id`). Use when you want to debug one item; switch items by editing the config.
 - `scripts/run_longmemeval.py --config <cfg>` — the orchestrator. Drives many QAs in their own subprocesses under one config; produces an aggregated `hypotheses.jsonl` + per-type `summary.json`. Use this for everything except single-item debugging.
 
+**Task shape** (PR #4 of loop redesign): under the default `simulation.agent_during_ingestion=false`, an LME task is `env.ingest_all(log)` (bulk-writes all ~50 historical chat sessions into `E` in one shot) → `num_turns=0` (per-turn loop skipped) → `env.get_end_of_task_probes()` fires the single QA probe. Set `simulation.agent_during_ingestion=true` to fall back to the legacy per-turn ingestion path (`num_turns = total_sessions + 1`, agent's `run_turn` mirrors one chat session per iteration, probe on the `+1` turn) — useful if the new path regresses on a particular config; PR #6 drops the flag once the production sweep validates parity.
+
 Output for the orchestrator lands under
 `output/longmemeval/<policy>_<seed>_<hash8>/qa_<question_id>/` (per QA) plus
 `hypotheses.jsonl` + `summary.json` at the run root.

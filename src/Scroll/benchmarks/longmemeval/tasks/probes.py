@@ -59,6 +59,12 @@ __all__ = [
 _active_probe: ProbeSpec | None = None
 _active_qtype: str | None = None
 _active_is_abstention: bool = False
+# Mirrors ``LongMemEvalEnvConfig.agent_during_ingestion`` for the active
+# run. Under the default ``False`` path the probe fires end-of-task
+# (see :meth:`LongMemEvalEnv.get_end_of_task_probes`) and the per-turn
+# registry returns ``[]``. Under the legacy ``True`` path the per-turn
+# registry returns the probe on the ``+1`` turn (today's behavior).
+_active_agent_during_ingestion: bool = False
 
 
 def active_question_type() -> str | None:
@@ -90,15 +96,24 @@ def compose_user_postscript() -> str:
 def set_active_probe(item: LongMemEvalItem, cfg: LongMemEvalEnvConfig) -> None:
     """Register the probe for this run; called from env.__init__."""
     global _active_probe, _active_qtype, _active_is_abstention
+    global _active_agent_during_ingestion
     _active_probe = _build_probe(item, cfg)
     _active_qtype = item.question_type
     _active_is_abstention = item.is_abstention
+    _active_agent_during_ingestion = bool(
+        getattr(cfg, "agent_during_ingestion", False)
+    )
 
 
 PROBES: list[ProbeSpec] = []  # filled per-run via set_active_probe
 
 
 def get_probes_for_turn(turn_idx: int) -> list[ProbeSpec]:
+    # New SCROLL-pure path: probe fires end-of-task (see
+    # :meth:`LongMemEvalEnv.get_end_of_task_probes`), not on a turn.
+    if not _active_agent_during_ingestion:
+        return []
+    # Legacy path: probe fires on the +1 probe-only turn.
     if _active_probe is None or _active_probe.turn_idx != turn_idx:
         return []
     return [_active_probe]
