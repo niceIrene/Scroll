@@ -13,8 +13,10 @@ probes); their agents share:
     The X = f(E) contract: the transcript IS in E; agents only differ
     by their retrieval function ``f``.
   - ``make_chat_memory_namespace`` — REPL namespace shared by every
-    chat-memory agent (``wait_for_next_day`` + stdlib pre-binds +
-    optional ``today_session`` reader on the log).
+    chat-memory agent (stdlib pre-binds + optional ``today_session``
+    reader on the log). Session-loop termination is signalled by
+    emitting a response with no Python code block — there is no
+    explicit advance-day primitive.
 
 Previously these lived under ``Scroll.benchmarks.longmemeval.agents``
 and BEAM cross-imported from the LME package. Moved here so neither
@@ -28,7 +30,6 @@ import re
 from typing import Any, Awaitable, Callable
 
 from Scroll.core import LogEntry
-from Scroll.core._codeact_agent import make_wait_for_next_day
 
 
 def make_time_range_extractor(
@@ -93,16 +94,16 @@ def make_time_range_extractor(
 def probe_session_body(session_idx: int) -> str:
     """Universal probe-session body (used on session N+1).
 
-    The probe session has no haystack content — the agent's only
-    legitimate cell is ``wait_for_next_day()`` to trigger the probe.
+    The probe session has no haystack content — the agent should
+    advance immediately by emitting a response with no Python code
+    block. The probe fires right after the session ends.
     """
     return (
-        f"Session {session_idx}: PROBE SESSION. Reply with ONLY this single cell:\n"
-        "```python\nwait_for_next_day()\n```\n"
-        "The probe will fire immediately after. Any other cell here "
-        "(data fetches, inspections, prep) is wasted compute — the "
-        "probe-time prompt will give you everything you need for "
-        "retrieval and answering. Just advance."
+        f"Session {session_idx}: PROBE SESSION. Reply with NO Python "
+        "code block to advance immediately. The probe will fire right "
+        "after. Any cell here (data fetches, inspections, prep) is "
+        "wasted compute — the probe-time prompt will give you "
+        "everything you need for retrieval and answering."
     )
 
 
@@ -117,8 +118,9 @@ def handle_only_body() -> str:
         "``LogEntry`` objects) or ``today_session()`` (native "
         "dicts). Past sessions: ``log.slice(session_idx=N, "
         "kind=\"chat_turn\")``.\n\n"
-        "Apply your session-loop contract (system prompt) and call "
-        "``wait_for_next_day()`` when done."
+        "Apply your session-loop contract (system prompt). When you "
+        "have no more actions for this session, reply with NO Python "
+        "code block to advance."
     )
 
 
@@ -228,15 +230,19 @@ def make_chat_memory_namespace(state, agent=None) -> dict[str, Callable]:
     """Return the REPL namespace common to every chat-memory agent
     (LongMemEval, BEAM, …).
 
-    ``state`` is the framework :class:`ToolState` (used by
-    ``wait_for_next_day``). ``agent`` is the agent instance (used by
-    ``today_session`` to read chat_turn entries from the agent's log).
+    ``state`` is the framework :class:`ToolState` (currently unused —
+    kept for API symmetry with per-env namespace builders). ``agent``
+    is the agent instance (used by ``today_session`` to read chat_turn
+    entries from the agent's log).
 
-    Also pre-binds a small stdlib surface (``re``, ``json``,
-    ``Counter``, ``defaultdict``, ``date``, ``timedelta``,
-    ``itertools``) so probe-time cells don't waste a turn on
-    ``import`` boilerplate. Anything else still needs an explicit
-    ``import`` — full stdlib access is intentional.
+    Pre-binds a small stdlib surface (``re``, ``json``, ``Counter``,
+    ``defaultdict``, ``date``, ``timedelta``, ``itertools``) so
+    probe-time cells don't waste a turn on ``import`` boilerplate.
+    Anything else still needs an explicit ``import`` — full stdlib
+    access is intentional.
+
+    Session termination: emit a response with no Python code block.
+    The CodeAct loop treats that as the end-of-session signal.
     """
     import re as _re
     import json as _json
@@ -245,7 +251,6 @@ def make_chat_memory_namespace(state, agent=None) -> dict[str, Callable]:
     from datetime import date as _date, timedelta as _timedelta
 
     ns: dict[str, Callable] = {
-        "wait_for_next_day": make_wait_for_next_day(state),
         "re": _re,
         "json": _json,
         "itertools": _itertools,

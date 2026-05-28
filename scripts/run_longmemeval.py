@@ -181,14 +181,6 @@ def _run_one_qa(job: dict) -> dict:
     per_qa_cfg = json.loads(json.dumps(raw_cfg))
     per_qa_cfg["simulation"]["question_id"] = qid
     per_qa_cfg["simulation"].pop("question_index", None)
-    # Cross-task memoryspace persistence. Wire a single shared file at
-    # the run root (alongside the per-QA ``qa_<qid>/`` directories) so
-    # ``LongMemEvalAgent`` can carry procedural_hints across QA sub-runs.
-    # The base CodeActAgent mechanism uses fcntl.flock so parallel
-    # sub-runs are safe.
-    shared_path = job.get("shared_memoryspace_path")
-    if shared_path:
-        per_qa_cfg.setdefault("agent", {})["shared_memoryspace_path"] = shared_path
 
     env_cfg = _parse_env_config(per_qa_cfg, "longmemeval")
     agent_cfg = _parse_agent_config(per_qa_cfg)
@@ -210,6 +202,7 @@ def _run_one_qa(job: dict) -> dict:
             checkpoint=job["checkpoint"],
             output_dir=str(out_dir),
             env_id="longmemeval",
+            keep_logs=job.get("keep_logs", True),
         )
     except Exception as exc:  # noqa: BLE001
         return {
@@ -355,20 +348,28 @@ def main() -> None:
         "--seed", type=int, default=1,
         help="Run seed (single-seed mode for now; matches the QA loop).",
     )
-    p.add_argument("--fresh", action="store_true", help="Ignore checkpoints; redo every QA.")
     p.add_argument(
-        "--keep-checkpoint", action="store_true",
-        help="Enable per-session checkpoint writing. OFF by default for "
-             "LongMemEval — each LME session writes a `session_NNN/` dir, and "
-             "M-split (~500 sessions) × parallel QAs explodes to "
-             "100GB+ disk. Crash recovery costs us re-running one QA "
-             "from session 1, which is acceptable since LME QAs are "
-             "independent.",
+        "--fresh", action=argparse.BooleanOptionalAction, default=True,
+        help="Redo every QA, ignoring any existing per-QA "
+             "probe_results.json (default: True). Pass --no-fresh to "
+             "skip QAs that already have results (resume a partial run).",
+    )
+    p.add_argument(
+        "--checkpoint", action="store_true",
+        help="Keep per-QA conversation_log.jsonl + session_logs.jsonl + "
+             "per-session checkpoint subdirs on disk. OFF by default — "
+             "only probe_results.json + config.json + summary.json are "
+             "written. Use --checkpoint when you need the full event log "
+             "for debugging or offline ``Scroll rebuild-w``.",
     )
     p.add_argument(
         "--no-checkpoint", action="store_true",
-        help="(deprecated) Checkpoints are now off by default; this "
-             "flag is a no-op kept for backward compatibility.",
+        help="(no-op; this is the default behavior now — kept for "
+             "backward compatibility with old scripts.)",
+    )
+    p.add_argument(
+        "--keep-checkpoint", action="store_true",
+        help="(Backward-compat alias for --checkpoint.)",
     )
     p.add_argument("--tracing-url", default=None, help="OTLP tracing endpoint.")
     p.add_argument(
@@ -453,14 +454,6 @@ def main() -> None:
             per_qa_results.append(r)
             qtype_correct[s["qtype"]].append(score)
 
-    # Cross-task lesson store lives at the run root, shared across all
-    # QA sub-runs. When ``--fresh`` is passed we drop any stale file
-    # from a prior orchestrator invocation so the cross-task memory
-    # starts empty (matches the per-QA ``--fresh`` semantic).
-    shared_memoryspace_path = run_root / "_shared_memoryspace.json"
-    if args.fresh and shared_memoryspace_path.exists():
-        shared_memoryspace_path.unlink()
-
     # Skip QAs whose ``probe_results.json`` already exists — resume
     # semantics. Without this filter the orchestrator re-runs every
     # selected QA from scratch, overwriting prior scores AND burning
@@ -477,6 +470,11 @@ def main() -> None:
         if probe_path.exists() and not args.fresh:
             skipped.append({"qid": item["question_id"], "qtype": item["question_type"], "out_dir": str(qa_dir)})
             continue
+        # OFF by default — only probe_results.json + config.json land on
+        # disk per QA. --checkpoint (or legacy --keep-checkpoint) opts
+        # back into the full conversation_log.jsonl + session_logs.jsonl
+        # + per-session checkpoint subdirs.
+        keep_logs = bool(args.checkpoint or args.keep_checkpoint)
         jobs.append({
             "qid": item["question_id"],
             "qtype": item["question_type"],
@@ -484,9 +482,9 @@ def main() -> None:
             "out_dir": str(qa_dir),
             "seed": args.seed,
             "fresh": args.fresh,
-            "checkpoint": args.keep_checkpoint,
+            "checkpoint": keep_logs,
+            "keep_logs": keep_logs,
             "tracing_url": args.tracing_url,
-            "shared_memoryspace_path": str(shared_memoryspace_path),
         })
     if skipped:
         print(f"  resume: skipping {len(skipped)} QAs with existing probe_results.json; running {len(jobs)} new")

@@ -71,32 +71,25 @@ class BaseEnvironment(ABC):
         return []
 
     def substrate_endgame_prompt(self) -> str:
-        """Per-env "RUN STRUCTURE" section appended to the substrate prompt.
+        """Per-env "RUN STRUCTURE" section prepended to the agent's
+        system prompt.
 
-        The core ``SUBSTRATE_PROMPT`` (in
-        ``Scroll.core._codeact_agent``) is intentionally
-        environment-neutral — it covers REPL mechanics, ``print``, and
-        error handling, but says nothing about what one session means,
-        what ``today`` is, or how a session ends. Each environment fills
-        in those rules here so the agent's mental model matches what the
-        framework actually does.
-
-        Default: empty string. Real envs (vending, longmemeval, beam)
-        override.
+        Each environment fills in what one session means, what
+        ``today`` is, how a session ends, and any env-specific
+        protocol notes. Default: empty string. Most envs now fold
+        this content directly into their agent's ``sys_prompt`` and
+        leave this default in place.
         """
         return ""
 
     def probe_substrate_prompt(self) -> str:
-        """Per-env probe-mode format rules.
+        """Per-env probe-mode format rules (legacy hook).
 
-        The core ``PROBE_SUBSTRATE_PROMPT`` covers what is universal
-        across envs (suspended end-session rules, lookup encouragement,
-        REPL semantics). Reply formatting — what an Answer line should
-        look like, what units the scorer expects, whether a
-        deterministic regex or an LLM judge consumes the reply — varies
-        by env and lives here.
-
-        Default: empty string.
+        Originally the place to spell out scorer-shaped reply rules
+        (Answer line, units, tolerances). Most envs now ride those
+        rules on :meth:`probe_user_postscript` instead — keep the
+        default empty string and the system prompt swap is never
+        exercised for new envs.
         """
         return ""
 

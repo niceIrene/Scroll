@@ -72,11 +72,10 @@ Plus class-level feature toggles:
 
 | Flag                  | Default | Effect                                                       |
 |-----------------------|---------|--------------------------------------------------------------|
-| `readonly_memoryspace`  | `False` | Wrap `ms` with a proxy that raises on mutators.              |
 | `expose_sub_llm`      | `False` | Bind a stateless one-shot LM as `sub_llm` in the REPL.       |
 | `expose_rlm`          | `False` | Bind a recursive sub-agent (`dspy.RLM`) as `rlm` in the REPL.|
 
-These flags let each env tune the contract under test without forking the base class.
+These flags let each env tune the contract under test without forking the base class. The agent's REPL `ms` is always a minimal query-only view (`sql_exec` + `vector_query`); the harness owns all writes via `self.memoryspace` directly.
 
 ### One retrieval cycle
 
@@ -104,10 +103,10 @@ The original chat-memory benchmark (Wu et al., 2024). Each task is one QA item w
 
 - `E` is populated with `chat_turn` entries (one per turn of every haystack session).
 - `W` has five tables (`chat_turns`, `user_preferences`, `event_dates`, `facts`, `sessions`) populated by regex extractors over each turn, plus a `rounds` view that pre-joins user + assistant turns.
-- `readonly_memoryspace=True` — the harness writes; the agent only queries. This is the pure-retrieval contract.
+- The harness writes; the agent's REPL only sees the query-only `ms` view. This is the pure-retrieval contract.
 - `expose_rlm=True` — the agent's most expensive primitive; for span extraction, ranking, and synthesis over candidate rows.
 - Probe time uses an OpenAI-style `execute_python` tool call so the model can reason in message content while passing code through a structured `code` parameter.
-- **L3 procedural memory**: after the judge scores each probe, `_on_probe_complete` distills a 1-3 case-study hint via a one-shot sub-LM and persists it to a file-locked `_shared_memoryspace.json`. The next probe of the same `question_type` sees the top-K most-relevant hints injected into its prompt. This lets a sweep accumulate cross-task lessons.
+- **L3 procedural memory**: after the judge scores each probe, `_on_probe_complete` distills a 1-3 case-study hint via a one-shot sub-LM and writes it to the per-task memoryspace under `procedural_hints`. Subsequent probes of the same `question_type` in the same task see the top-K most-relevant hints injected into their prompt.
 
 Class: [`LongMemEvalAgent`](../src/Scroll/benchmarks/longmemeval/agents/agent.py).
 
@@ -117,9 +116,9 @@ A long-horizon economic simulation: 30-180 day inventory + pricing + supplier-ne
 
 - `E` is the full event log (briefings, agent actions, env outcomes).
 - `W` has 7 base tables (`sales`, `deliveries`, `orders`, `daily_finances`, `daily_inventory`, `supplier_prices`, `notes`) plus 5 analytic views (`weekly_revenue_by_sku`, `rolling_7d_units_by_sku`, `cogs_by_supplier`, `inventory_turnover`, `daily_pnl`).
-- `readonly_memoryspace=False` — vending is a planning task; the agent may write its own scratch state.
-- `expose_sub_llm=True` — for qualitative trend analysis over recalled rows. RLM is unnecessary; the structured tables answer most questions directly.
-- Action tools (`send_email`, `read_email`, `get_money_balance`, `run_sub_agent`, `wait_for_next_day`) live alongside `log` / `ms` in the REPL.
+- Agent only queries the auto-ingested `W`; harness owns all writes (matches LME / BEAM).
+- `expose_rlm=True` — recursive `dspy.RLM` sub-agent for free-text synthesis over recalled rows.
+- Action tools (`send_email`, `read_email`, `get_money_balance`, `run_sub_agent`) live alongside `log` / `ms` in the REPL.
 
 Class: [`VendingAgent`](../src/Scroll/benchmarks/vending/agents/agent.py).
 
@@ -129,7 +128,7 @@ Class: [`VendingAgent`](../src/Scroll/benchmarks/vending/agents/agent.py).
 
 - `E` is populated with `chat_turn` entries (one per turn of every BEAM batch).
 - `W` uses the same five-table schema as LongMemEval (`chat_turns`, `user_preferences`, `event_dates`, `facts`, `sessions`) plus the `rounds` view. Regex extractors are shared with LME (chat memory is chat memory).
-- `readonly_memoryspace=True`, `expose_rlm=True` — same flags as LME (pure-retrieval contract).
+- `expose_rlm=True` — same flag as LME (pure-retrieval contract).
 - ~20 probing questions per chat across 10 ability categories (information_extraction, multi_session_reasoning, knowledge_update, temporal_reasoning, abstention, contradiction_resolution, event_ordering, instruction_following, preference_following, summarization). All fire on the probe day.
 - Scoring: per-rubric-item LLM-judge averaged. Vendored prompt template from BEAM's own evaluator so scores are comparable with the upstream numbers.
 - Dataset lives at `external/beam/` (git submodule). Time anchors (`Month-Day-Year` strings on each message) are normalized to ISO `YYYY-MM-DD` at load time so the memoryspace's `session_date_iso` column is sortable.
@@ -140,16 +139,21 @@ The BEAM agent is a *leaner* version of `LongMemEvalAgent` — no procedural-hin
 
 ---
 
-## Memory-strategy taxonomy
+## Per-turn context management
 
-`ScrollAgent` inherits the `memory_mode` knob from `CodeActAgent`. Two strategies are supported (these are about how `X = f(E)` shapes the LLM's per-turn context, not about `W`):
+History is kept continuous across sessions (one task = one
+conversation). Each model call runs `_compress_history_to_budget` as
+a pre-call hook: if total chars exceed `cfg.context_max_tokens * 4`,
+the oldest batch is summarized into a running `_compressed_summary`
+and dropped from `self._history`. The summary is re-injected as an
+extra system message at every `_call_model`, so the LM still sees
+old context — just compacted.
 
-| Mode       | Per-session history                                                              |
-|------------|----------------------------------------------------------------------------------|
-| `step`     | Fresh history per session; the agent re-sees only this session's cells. *Default.* |
-| `sliding`  | Cross-session history with a running summary; older turns drop when over budget.   |
-
-All three SCROLL agents (LongMemEval, Vending, BEAM) use `step`. The session-loop on LME / BEAM is auto-advanced (no per-session LM call); on Vending the agent runs cells each session to plan inventory / orders.
+LME / BEAM auto-advance their session loops (no per-session LM call),
+so their history grows trivially across haystack sessions and rarely
+triggers compression. Vending exercises the compression path
+naturally as the agent runs cells each day to plan inventory /
+orders.
 
 ---
 
@@ -158,7 +162,7 @@ All three SCROLL agents (LongMemEval, Vending, BEAM) use `step`. The session-loo
 Three points:
 
 1. **The (E, W, CodeAct) decomposition is a clean primitive.** It separates *what the memory contains* (env-specific schema in `W`) from *how the agent uses it* (env-agnostic CodeAct + REPL). The same base class drives chat-memory probes and multi-day planning without per-task harness changes.
-2. **The contract is testable.** Setting `readonly_memoryspace=True` cleanly isolates "agent's retrieval skill" from "agent's planning skill." Pure-retrieval benchmarks (LME) probe one; writable-memoryspace benchmarks (Vending, BEAM) probe the other.
+2. **The contract is testable.** The agent's REPL is always a minimal query-only view of `ms` (SQL + vector); the harness owns ingestion. This cleanly isolates "agent's retrieval skill" from "agent's planning skill" — every env follows the same pure-retrieval contract for `ms`, with planning surfaced through env-action tools when relevant (Vending) or omitted entirely (LME / BEAM).
 3. **The pattern generalizes.** Adding a benchmark = define a schema + ingest pipeline + prompt. The substrate (LLM loop, REPL, checkpoint, tracing) is reused. We demonstrate this with three benchmarks of meaningfully different shape.
 
 ---
@@ -167,7 +171,7 @@ Three points:
 
 ### LongMemEval (full 500-QA `_s` split incl. abstention twins)
 
-Agent: `qwen3.7-max` (Dashscope CN). Judge: `qwen3.6-plus` with a `<judge_thinking>` step. Pipeline: type-specific qtype templates (multi-session count / KU stale-value / temporal) + grace-turn rescue + mem0-style synthesis rules at commit time. Full provenance: [`output/longmemeval_qwen37max_v4/FAILURE_REPORT.md`](../output/longmemeval_qwen37max_v4/FAILURE_REPORT.md).
+Agent: `qwen3.7-max` (Dashscope CN). Judge: `qwen3.6-plus` with a `<judge_thinking>` step. Pipeline: type-specific qtype templates (multi-session count / KU stale-value / temporal) + grace-turn rescue + mem0-style synthesis rules at commit time.
 
 | Type | Acc | n |
 |---|---:|---:|
@@ -180,25 +184,6 @@ Agent: `qwen3.7-max` (Dashscope CN). Judge: `qwen3.6-plus` with a `<judge_thinki
 | **OVERALL** | **0.906** | **500** |
 
 **Provenance of the +10.6pp delta from a naive baseline:** qwen3.6-plus + no fixes ≈ 0.80 → + grace-turn commit-rescue + abstention fallback (0.866) → + qwen3.7-max upgrade (0.888) → + per-qtype forcing templates + mem0-style synthesis rules (0.906). The biggest single move is the KU stale-value template + synthesis rules, which together took knowledge-update from 0.821 to 0.974 (+15pp on the subset).
-
-## Reproducing the paper numbers
-
-Each benchmark ships a single canonical config and a reproduction script:
-
-```bash
-# LongMemEval (500 QA, qwen3.7-max)
-bash scripts/reproduce_longmemeval.sh
-
-# Vending (30-day, GPT-5-mini)
-bash scripts/reproduce_vending.sh
-
-# BEAM (TBD)
-bash scripts/reproduce_beam.sh
-```
-
-Each script runs the canonical config and writes a summary JSON to `output/<env>/_reproduction.json` with mean / median scores per question type or per probe category.
-
----
 
 ## File map
 

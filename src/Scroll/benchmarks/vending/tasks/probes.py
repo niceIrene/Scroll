@@ -1,12 +1,32 @@
-"""Vending-specific probe definitions and ground truth functions."""
+"""Vending-specific probe definitions, ground truth + LLM-judge scoring.
+
+Scoring is via an LLM judge (mirrors LongMemEval / BEAM): the
+deterministic ground-truth string is built first by ``_gt_*`` from
+:class:`VendingSnapshot` / :class:`DataSourceManager` state, then the
+agent's free-text answer + the ground truth are handed to
+``judge_model`` (configured in ``EnvConfig``). The judge returns a
+``<judge_thinking>...</judge_thinking>`` reasoning block followed by
+``yes`` / ``no``, which we map to 1.0 / 0.0.
+
+Each scoring call gets its own ``judge.probe.{qid}`` trace span so
+Phoenix can render the judge thinking alongside the agent's probe
+trace.
+"""
 
 from __future__ import annotations
 
+import logging
+import os
 import re
+from typing import Callable
+
+from opentelemetry import trace as otel_trace
 
 from Scroll.core import EnvSnapshot, ProbeSpec
 from Scroll.benchmarks.vending.datasource import DataSourceManager
-from Scroll.benchmarks.vending.tasks.rewards import score_numeric, score_keyword
+
+_log = logging.getLogger(__name__)
+_tracer = otel_trace.get_tracer(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -439,47 +459,232 @@ def _gt_a16(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Probe definitions
+# LLM judge
 # ---------------------------------------------------------------------------
 
-PROBES: list[ProbeSpec] = [
+_JUDGE_PROMPT = """\
+You are evaluating whether an agent's free-text response to a
+vending-machine business question matches the deterministic ground
+truth. The agent typically commits a final ``Answer: ...`` line; the
+content of THAT line is what should be checked. Reasoning above the
+Answer line is for your context only.
+
+QUESTION:
+{question}
+
+GROUND TRUTH:
+{answer}
+
+AGENT RESPONSE:
+{response}
+
+DECISION RULES:
+- Numeric values: allow modest tolerance — ±5% relative on dollar
+  amounts (``$282.00`` vs ``$280.00`` is acceptable), ±5 percentage
+  points absolute on percentages (``42%`` vs ``45%`` is acceptable),
+  ±10% relative on bare counts.
+- Multi-value answers: every value the ground truth lists must be
+  matched (e.g. "cola, water (tied at 40 units)" requires both SKUs
+  AND the count). Missing a tied item is wrong.
+- Phrasing: synonyms / unit symbols ($ vs USD) / minor wording
+  variations are fine if the underlying values match.
+- Extra prose around the Answer line is fine. Only judge the Answer
+  line's content.
+- If the agent gave no committed Answer or abstained without trying
+  to compute, mark wrong.
+
+Output a brief ``<judge_thinking>...</judge_thinking>`` block with
+your reasoning, then on a NEW LINE write either ``yes`` (response
+matches ground truth) or ``no`` (it doesn't).
+"""
+
+
+_JUDGE_THINKING_CLOSE_RE = re.compile(r"</judge_thinking\s*>", re.IGNORECASE)
+_VERDICT_TOKEN_RE = re.compile(r"\b(yes|no)\b", re.IGNORECASE)
+
+
+def _parse_judge_verdict(text: str) -> float:
+    """Extract yes/no verdict from a judge response.
+
+    Strategy: look at text after the ``</judge_thinking>`` close tag
+    (the thinking block can legitimately contain yes/no); if missing,
+    fall back to the LAST yes/no in the whole text. Returns 1.0 for
+    yes, 0.0 otherwise.
+    """
+    if not text:
+        return 0.0
+    m_close = _JUDGE_THINKING_CLOSE_RE.search(text)
+    search_region = text[m_close.end():] if m_close else text
+    matches = _VERDICT_TOKEN_RE.findall(search_region)
+    if not matches:
+        matches = _VERDICT_TOKEN_RE.findall(text)
+    if not matches:
+        return 0.0
+    return 1.0 if matches[-1].lower() == "yes" else 0.0
+
+
+def _judge_score(
+    qid: str,
+    question: str,
+    ground_truth: str,
+    agent_answer: str,
+    judge_cfg: dict,
+) -> float:
+    """Call the configured judge and return 1.0 / 0.0.
+
+    Network / quota failures => 0.0 with a warning. Each call gets its
+    own ``judge.probe.{qid}`` trace span so Phoenix renders the judge
+    thinking alongside the agent's probe trace.
+    """
+    prompt = _JUDGE_PROMPT.format(
+        question=question, answer=ground_truth, response=agent_answer,
+    )
+
+    try:
+        from openai import OpenAI
+    except ImportError:  # pragma: no cover
+        _log.warning("openai not installed — judge skipped, scoring 0.0")
+        return 0.0
+
+    api_key = os.getenv(judge_cfg["api_key_env"], "")
+    if not api_key:
+        _log.warning(
+            "judge api key env %s is empty — scoring 0.0",
+            judge_cfg["api_key_env"],
+        )
+        return 0.0
+
+    client = OpenAI(api_key=api_key, base_url=judge_cfg.get("api_base"))
+
+    # Dashscope-only extra_body. Gate on base_url / model name so we
+    # don't send it to the real OpenAI endpoint (which returns HTTP 400).
+    judge_extra: dict = {}
+    _is_dashscope = (
+        "dashscope" in (judge_cfg.get("api_base") or "").lower()
+        or (judge_cfg.get("model") or "").lower().startswith(("qwen", "deepseek"))
+    )
+    if _is_dashscope:
+        judge_extra["extra_body"] = {"enable_thinking": False}
+
+    with _tracer.start_as_current_span(f"judge.probe.{qid}") as judge_span:
+        judge_span.set_attributes({
+            "openinference.span.kind": "CHAIN",
+            "judge.model": judge_cfg.get("model", ""),
+            "judge.qid": qid,
+            "judge.question": question,
+            "judge.ground_truth": str(ground_truth)[:500],
+            "judge.agent_response": str(agent_answer)[:500],
+        })
+        try:
+            completion = client.chat.completions.create(
+                model=judge_cfg["model"],
+                messages=[{"role": "user", "content": prompt}],
+                n=1,
+                temperature=0,
+                max_tokens=800,
+                **judge_extra,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("judge call failed (%s) — scoring 0.0", exc)
+            judge_span.set_attribute("judge.error", str(exc)[:200])
+            judge_span.set_attribute("judge.score", 0.0)
+            return 0.0
+
+        text = (completion.choices[0].message.content or "").strip()
+        score = _parse_judge_verdict(text)
+        judge_span.set_attribute("judge.verdict", text[-200:])
+        judge_span.set_attribute("judge.score", score)
+        return score
+
+
+def _make_judge_scorer(qid: str, question: str, judge_cfg: dict) -> Callable[[str, str], float]:
+    """Build a ``(agent_answer, ground_truth) -> float`` closure that
+    routes through :func:`_judge_score` with this probe's identity and
+    the shared judge config.
+    """
+    def scoring_fn(agent_answer: str, ground_truth: str) -> float:
+        return _judge_score(
+            qid=qid,
+            question=question,
+            ground_truth=ground_truth,
+            agent_answer=agent_answer,
+            judge_cfg=judge_cfg,
+        )
+    return scoring_fn
+
+
+# ---------------------------------------------------------------------------
+# Probe definitions
+#
+# Static metadata table (qid, session_idx, question, gt_fn). The
+# scoring_fn is built per-probe at ``set_judge_config`` time so each
+# closure captures its own (qid, question, judge_cfg). The module-level
+# ``PROBES`` list starts empty and is populated when
+# :class:`VendingEnv.__init__` calls :func:`set_judge_config`.
+# ---------------------------------------------------------------------------
+
+
+_PROBE_META: list[tuple] = [
+    # (qid, session_idx, question, gt_fn)
     # Early phase (days 10-28): short-horizon recall + basic analysis
-    ProbeSpec("A1", 10, "What was the total sales revenue for days 6 through 9?", _gt_a1, score_numeric),
-    ProbeSpec("A2", 15, "Which SKU has sold the most units so far? If multiple SKUs are tied for the most, list every one of them with the unit count.", _gt_a2, score_keyword),
-    ProbeSpec("A3", 20, "What is the wholesale price of cola from metro_wholesale?", _gt_a3, score_numeric),
-    ProbeSpec("A4", 25, "How many delivery shipments have arrived so far (count one shipment per `delivery_arrived` event in the env logs, regardless of how many SKUs were inside), and what was their total cost?", _gt_a4, score_numeric),
-    ProbeSpec("A5", 28, "What was your net worth on day 14?", _gt_a5, score_numeric),
-    ProbeSpec("A6", 16, "At end of day 16 (after today's sales have already executed), how many units of cola are in the vending machine, and how many are in storage?", _gt_a6, score_numeric),
-    ProbeSpec("A7", 23, "At end of day 23 (after today's sales have already executed), what is the selling price of energy drinks?", _gt_a7, score_numeric),
-    ProbeSpec("B1", 12, "Which day so far had the highest sales revenue? If multiple days are tied at the same revenue, list every one of them.", _gt_b1, score_keyword),
-    ProbeSpec("B2", 18, "Are any SKUs running out completely (zero units in BOTH the vending machine AND storage on the same day)? How many distinct stockout events occurred for each SKU that is actively sold?", _gt_b2, score_keyword),
-    ProbeSpec("B3", 22, "What has been the average daily change in your net worth so far? (Take the net worth at end of the latest day, subtract the net worth at end of day 1, and divide by the number of elapsed days.)", _gt_b3, score_numeric),
-    ProbeSpec("B4", 26, "For products carried by multiple suppliers, which supplier is cheaper?", _gt_b4, score_keyword),
-    ProbeSpec("B5", 14, "What is your total sales revenue so far, and what percentage of that revenue came from your single top-revenue SKU? If multiple SKUs are tied for top revenue, list each with the same shared percentage.", _gt_b5, score_numeric),
-    ProbeSpec("B6", 24, "What is your approximate profit margin on cola (selling price minus wholesale cost, as a percentage of selling price)?", _gt_b6, score_numeric),
-
-    # Medium phase (days 35-60): 10-day window aggregations, past-state recall
-    ProbeSpec("A8", 35, "What was your total sales revenue for days 21 through 30?", _gt_a8, score_numeric),
-    ProbeSpec("A9", 40, "How many delivery shipments have arrived so far (count one shipment per `delivery_arrived` event in the env logs, regardless of how many SKUs were inside)?", _gt_a9, score_numeric),
-    ProbeSpec("B7", 45, "Comparing days 1-15 vs days 16-30, which period had higher average daily revenue? Answer with the period range only — exactly `1-15` or `16-30`.", _gt_b7, score_keyword),
-    ProbeSpec("A10", 50, "What was your net worth on day 30?", _gt_a10, score_numeric),
-    ProbeSpec("B8", 55, "Which SKU has contributed the most cumulative profit so far, where profit per unit = selling revenue minus the CHEAPEST available wholesale price for that SKU across all known suppliers? If multiple SKUs are tied for top profit, list every one of them.", _gt_b8, score_keyword),
-
-    # Long phase (days 65-120): 30-day rolling windows, deep-past recall
-    ProbeSpec("A11", 65, "How many units of water were in the machine and in storage on day 30?", _gt_a11, score_numeric),
-    ProbeSpec("B9", 75, "Over the past 30 days (days 46-75), what was the average daily units sold?", _gt_b9, score_numeric),
-    ProbeSpec("A12", 90, "What was your cumulative sales revenue across days 1 through 60?", _gt_a12, score_numeric),
-    ProbeSpec("B10", 100, "How many distinct SKUs have you stocked in the vending machine at any point so far?", _gt_b10, score_numeric),
-    ProbeSpec("A13", 110, "How many full-depletion stockout events have occurred in the last 30 days (days 81-110)? Count one event per (day, SKU) pair where the SKU had zero units in BOTH the vending machine AND storage at end of day, and only count SKUs that have been stocked at some point.", _gt_a13, score_numeric),
-    ProbeSpec("B11", 120, "Over the past 30 days (days 91-120), is your net worth trending up, down, or flat? Answer with one word: `up`, `down`, or `flat` (treat changes within ±5% of the starting net worth as flat).", _gt_b11, score_keyword),
-
-    # Full-horizon phase (days 130-180): run-wide extrema, long-term comparisons
-    ProbeSpec("A14", 130, "What was your net worth on day 60?", _gt_a14, score_numeric),
-    ProbeSpec("B12", 145, "Which supplier have you placed the most orders with so far, counted by the number of `Order confirmation` emails received from each supplier (NOT by price inquiries, replies, or rejection emails)? If multiple suppliers are tied, list every one of them.", _gt_b12, score_keyword),
-    ProbeSpec("A15", 160, "Which day so far had the highest sales revenue, and what was that revenue? If multiple days are tied at the same peak revenue, list every one of them.", _gt_a15, score_numeric),
-    ProbeSpec("B13", 175, "Comparing the first 30 days (days 1-30) and the most recent 30 days (days 146-175), has average daily revenue gone up, down, or stayed flat? Answer with one word: `up`, `down`, or `flat` (treat changes within ±5% of the early average as flat).", _gt_b13, score_keyword),
-    ProbeSpec("A16", 180, "What was your total delivery spend across the first 90 days?", _gt_a16, score_numeric),
+    ("A1", 10, "What was the total sales revenue for days 6 through 9?", _gt_a1),
+    ("A2", 15, "Which SKU has sold the most units so far? If multiple SKUs are tied for the most, list every one of them with the unit count.", _gt_a2),
+    ("A3", 20, "What is the wholesale price of cola from metro_wholesale?", _gt_a3),
+    ("A4", 25, "How many delivery shipments have arrived so far (count one shipment per `delivery_arrived` event in the env logs, regardless of how many SKUs were inside), and what was their total cost?", _gt_a4),
+    ("A5", 28, "What was your net worth on day 14?", _gt_a5),
+    ("A6", 16, "At end of day 16 (after today's sales have already executed), how many units of cola are in the vending machine, and how many are in storage?", _gt_a6),
+    ("A7", 23, "At end of day 23 (after today's sales have already executed), what is the selling price of energy drinks?", _gt_a7),
+    ("B1", 12, "Which day so far had the highest sales revenue? If multiple days are tied at the same revenue, list every one of them.", _gt_b1),
+    ("B2", 18, "Are any SKUs running out completely (zero units in BOTH the vending machine AND storage on the same day)? How many distinct stockout events occurred for each SKU that is actively sold?", _gt_b2),
+    ("B3", 22, "What has been the average daily change in your net worth so far? (Take the net worth at end of the latest day, subtract the net worth at end of day 1, and divide by the number of elapsed days.)", _gt_b3),
+    ("B4", 26, "For products carried by multiple suppliers, which supplier is cheaper?", _gt_b4),
+    ("B5", 14, "What is your total sales revenue so far, and what percentage of that revenue came from your single top-revenue SKU? If multiple SKUs are tied for top revenue, list each with the same shared percentage.", _gt_b5),
+    ("B6", 24, "What is your approximate profit margin on cola (selling price minus wholesale cost, as a percentage of selling price)?", _gt_b6),
+    # Medium phase (days 35-60)
+    ("A8", 35, "What was your total sales revenue for days 21 through 30?", _gt_a8),
+    ("A9", 40, "How many delivery shipments have arrived so far (count one shipment per `delivery_arrived` event in the env logs, regardless of how many SKUs were inside)?", _gt_a9),
+    ("B7", 45, "Comparing days 1-15 vs days 16-30, which period had higher average daily revenue? Answer with the period range only — exactly `1-15` or `16-30`.", _gt_b7),
+    ("A10", 50, "What was your net worth on day 30?", _gt_a10),
+    ("B8", 55, "Which SKU has contributed the most cumulative profit so far, where profit per unit = selling revenue minus the CHEAPEST available wholesale price for that SKU across all known suppliers? If multiple SKUs are tied for top profit, list every one of them.", _gt_b8),
+    # Long phase (days 65-120)
+    ("A11", 65, "How many units of water were in the machine and in storage on day 30?", _gt_a11),
+    ("B9", 75, "Over the past 30 days (days 46-75), what was the average daily units sold?", _gt_b9),
+    ("A12", 90, "What was your cumulative sales revenue across days 1 through 60?", _gt_a12),
+    ("B10", 100, "How many distinct SKUs have you stocked in the vending machine at any point so far?", _gt_b10),
+    ("A13", 110, "How many full-depletion stockout events have occurred in the last 30 days (days 81-110)? Count one event per (day, SKU) pair where the SKU had zero units in BOTH the vending machine AND storage at end of day, and only count SKUs that have been stocked at some point.", _gt_a13),
+    ("B11", 120, "Over the past 30 days (days 91-120), is your net worth trending up, down, or flat? Answer with one word: `up`, `down`, or `flat` (treat changes within ±5% of the starting net worth as flat).", _gt_b11),
+    # Full-horizon phase (days 130-180)
+    ("A14", 130, "What was your net worth on day 60?", _gt_a14),
+    ("B12", 145, "Which supplier have you placed the most orders with so far, counted by the number of `Order confirmation` emails received from each supplier (NOT by price inquiries, replies, or rejection emails)? If multiple suppliers are tied, list every one of them.", _gt_b12),
+    ("A15", 160, "Which day so far had the highest sales revenue, and what was that revenue? If multiple days are tied at the same peak revenue, list every one of them.", _gt_a15),
+    ("B13", 175, "Comparing the first 30 days (days 1-30) and the most recent 30 days (days 146-175), has average daily revenue gone up, down, or stayed flat? Answer with one word: `up`, `down`, or `flat` (treat changes within ±5% of the early average as flat).", _gt_b13),
+    ("A16", 180, "What was your total delivery spend across the first 90 days?", _gt_a16),
 ]
+
+
+# Populated by ``set_judge_config(cfg)``. Empty at module-load time
+# because the judge config comes from ``EnvConfig`` (passed in by the
+# benchmark harness at env init).
+PROBES: list[ProbeSpec] = []
+
+
+def set_judge_config(cfg) -> None:
+    """Build the ``PROBES`` list using ``cfg``'s judge fields.
+
+    Called from :class:`VendingEnv.__init__`. Idempotent — re-calling
+    rebuilds the list (useful for tests that spin up multiple envs).
+    """
+    judge_cfg = {
+        "model": cfg.judge_model,
+        "api_key_env": cfg.judge_api_key_env,
+        "api_base": cfg.judge_api_base,
+    }
+    PROBES.clear()
+    for qid, session_idx, question, gt_fn in _PROBE_META:
+        scoring_fn = _make_judge_scorer(qid, question, judge_cfg)
+        PROBES.append(
+            ProbeSpec(qid, session_idx, question, gt_fn, scoring_fn)
+        )
 
 
 def get_probes_for_session(session_idx: int) -> list[ProbeSpec]:

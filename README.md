@@ -10,20 +10,16 @@ See [`docs/scroll.md`](docs/scroll.md) for the design rationale and the (E, W, C
 
 ## Headline result
 
-**LongMemEval `_s` split, 500 QA (incl. abstention twins): `acc = 0.906`**
-SCROLL framework (E + W + CodeAct) + qwen3.7-max agent + qwen3.6-plus judge. Config: [`configs/longmemeval/scroll_qwen37max.json`](configs/longmemeval/scroll_qwen37max.json). Full provenance and failure analysis: [`output/longmemeval_qwen37max_v4/FAILURE_REPORT.md`](output/longmemeval_qwen37max_v4/FAILURE_REPORT.md).
+**LongMemEval `_s` split, 500 QA (incl. abstention twins):**
 
-| Type | Acc | n |
-|---|---:|---:|
-| single-session-assistant | 0.982 | 56 |
-| knowledge-update | 0.974 | 78 |
-| single-session-user | 0.971 | 70 |
-| temporal-reasoning | 0.917 | 133 |
-| single-session-preference | 0.900 | 30 |
-| multi-session | 0.789 | 133 |
-| **OVERALL** | **0.906** | **500** |
+| Agent model | Overall | k-update | multi-sess | s-asst | s-pref | s-user | temporal |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **scroll · deepseek-v4-pro** | **0.918** | 0.910 | 0.835 | 0.946 | 0.967 | 0.971 | **0.955** |
+| scroll · qwen3.7-max | 0.908 | 0.936 | 0.812 | 0.982 | 0.967 | 0.957 | 0.917 |
 
-What the framework actually contributes vs the model: a naive `qwen3.6-plus` agent answering the same questions ends at ~0.80; replacing it with `qwen3.7-max` alone only gets to 0.888. The remaining +1.8 pp comes from the SCROLL-side pipeline — per-qtype forcing templates (multi-session count, KU stale-value, temporal-reasoning), a grace-turn rescue against budget-exhausted termination, and a commit-time synthesis block. The breakdown is in the failure report above.
+SCROLL framework (E + W + CodeAct) + qwen3.7-max judge. Configs: [`scroll_qwen37max.json`](configs/longmemeval/scroll_qwen37max.json), [`scroll_deepseek.json`](configs/longmemeval/scroll_deepseek.json).
+
+The same scaffold (prompts, retrieval primitives, REPL substrate) runs across both models — only the agent model name changes in the config. Deepseek-v4-pro wins on TR (+3.8pp) and multi-session (+2.3pp) at the cost of ~3× wall time (75s/QA vs 24s/QA); qwen3.7-max wins on KU (+2.6pp) and assistant (+3.6pp) at lower latency.
 
 ## Install
 
@@ -56,9 +52,14 @@ Python 3.11+. Tested on macOS arm64; should work on Linux.
 # LongMemEval — one task to verify the install
 Scroll --config configs/longmemeval/scroll_qwen37max.json --seed 1
 
-# Run the full 500-QA sweep in parallel (the 0.906 number above)
+# Run the full 500-QA sweep in parallel (the 0.908 number above)
 python scripts/run_longmemeval.py \
     --config configs/longmemeval/scroll_qwen37max.json \
+    --seed 1 --max-parallel 8 --include-abstention
+
+# Or use deepseek-v4-pro instead (0.918 — slower wall time)
+python scripts/run_longmemeval.py \
+    --config configs/longmemeval/scroll_deepseek.json \
     --seed 1 --max-parallel 8 --include-abstention
 
 # Vending — 30-day single run
@@ -73,23 +74,12 @@ output/longmemeval/scroll_1_<hash>/
 │   ├── conversation_log.jsonl    # the event log E
 │   ├── probe_results.json        # judge scores + agent answers
 │   └── ...
-├── _shared_memoryspace.json        # cross-task procedural_hints
 └── hypotheses.jsonl              # aggregate (LME-evaluator format)
-```
-
-## Reproducing paper numbers
-
-Each benchmark has a single canonical config and a reproduction script:
-
-```bash
-bash scripts/reproduce_longmemeval.sh   # LongMemEval s-split, qwen3.7-max → 0.906
-bash scripts/reproduce_vending.sh        # Vending, GPT-5-mini
-bash scripts/reproduce_beam.sh           # BEAM, 100K scale, qwen3.6-plus
 ```
 
 ## Configuration
 
-Each run takes one JSON config file. Skeleton (matches the 0.906 LongMemEval config):
+Each run takes one JSON config file. Skeleton (matches the 0.908 LongMemEval config):
 
 ```json
 {
@@ -110,7 +100,7 @@ Each run takes one JSON config file. Skeleton (matches the 0.906 LongMemEval con
     "max_output_tokens": 4096,
     "context_max_tokens": 60000,
     "enable_playbook": false,
-    "enable_distillation": true
+    "enable_distillation": false
   }
 }
 ```
@@ -182,7 +172,7 @@ configs/<env>/                 one JSON per (model, variant)
 docs/scroll.md                 design doc
 scripts/
 ├── run_longmemeval.py         multi-QA orchestrator
-├── run_parallel.py            Docker-parallel sweep
+├── run_vending.py             Docker-parallel sweep (Vending)
 ├── shard_lme_dataset.py       one-time dataset preprocessing
 └── test_rlm.py                RLM wrapper smoke test
 ```
@@ -210,8 +200,6 @@ The registry resolves `"environment": "<env>"` to `Scroll.benchmarks.<env>` auto
   note   = {Code: \url{<repo>}}
 }
 ```
-
-See [`CITATION.cff`](CITATION.cff) for machine-readable citation metadata.
 
 ## License
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from Scroll.core import (
     BaseEnvironment,
@@ -11,7 +11,54 @@ from Scroll.core import (
     serialize_rng,
     restore_rng,
 )
-from Scroll.benchmarks.vending.catalog import EnvConfig, Product
+
+
+# ---------------------------------------------------------------------------
+# Vending data models (Product + EnvConfig). Kept here — alongside the env
+# class — to mirror LongMemEval, which collapsed its old standalone
+# ``catalog.py`` into ``env.py``.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Product:
+    sku: str
+    name: str
+    wholesale_cost: float
+    base_daily_demand: float
+    reference_price: float
+    elasticity: float
+
+
+@dataclass
+class EnvConfig:
+    num_sessions: int                 # number of simulated business days
+    start_cash: float
+    daily_fee: float
+    machine_slots: int
+    max_skus_in_machine: int
+    lead_time_days: int               # vending domain: real calendar lead time
+
+    # LLM-judge config for probe scoring (mirrors LongMemEval's hook).
+    # Each probe answer is judged against the deterministic ground
+    # truth and mapped to 1.0 / 0.0 by a yes/no verdict. Set in the
+    # config JSON's ``simulation`` block.
+    judge_model: str = "gpt-4o-2024-08-06"
+    judge_api_key_env: str = "CN_DASHSCOPE_API_KEY"
+    judge_api_base: str | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict) -> EnvConfig:
+        """Construct from a raw config dict, using dataclass defaults for missing keys.
+
+        Accepts the legacy ``"days"`` key as a synonym for ``"num_sessions"``
+        so older configs continue to parse.
+        """
+        known = {f.name for f in fields(cls)}
+        normalized = dict(d)
+        if "num_sessions" not in normalized and "days" in normalized:
+            normalized["num_sessions"] = normalized["days"]
+        return cls(**{k: v for k, v in normalized.items() if k in known})
 
 
 @dataclass
@@ -25,21 +72,11 @@ class VendingSnapshot(EnvSnapshot):
     units_sold: int = 0
     inventory: dict[str, dict] = field(default_factory=dict)
 
-
-_VENDING_SUBSTRATE_ENDGAME = """\
-RUN STRUCTURE — VENDING:
-- Each iteration is one business day. The simulation runs for many
-  consecutive days; cash, inventory, and pending deliveries persist
-  across days, so what you do today directly affects tomorrow.
-- ``today`` (1-indexed int) is bound in your REPL as the current day
-  number. Use it to label or slice your data, e.g. ``today - 1`` for
-  yesterday or ``log.range_by_day(today - 7, today - 1)`` for the
-  past week.
-- When you have finished all the actions you want to take today
-  (restocking, ordering, pricing, replying to suppliers, etc.), call
-  ``wait_for_next_day()`` to advance to the next morning. Code after
-  that call in the same cell will not run.
-"""
+    @property
+    def day(self) -> int:
+        # Vending's domain vocabulary calls each session a "day"; the
+        # framework-level field is ``session_idx``. Probes read ``.day``.
+        return self.session_idx
 
 
 def default_catalog() -> list[Product]:
@@ -71,6 +108,11 @@ class VendingEnv(BaseEnvironment):
         self.bankrupt_days = 0
         self._last_revenue = 0.0
         self._last_sold_units = 0
+        # Build the probe list with judge-config-bound scoring closures.
+        # The framework's :func:`get_probes_for_session` reads from
+        # ``tasks.probes.PROBES`` which starts empty at module load.
+        from Scroll.benchmarks.vending.tasks.probes import set_judge_config
+        set_judge_config(cfg)
 
     def visible_state(self) -> dict:
         return {"session_idx": self.session_idx,
@@ -277,12 +319,11 @@ class VendingEnv(BaseEnvironment):
             out["category_b_avg"] = round(sum(b_scores) / len(b_scores), 3)
         return out
 
-    def substrate_endgame_prompt(self) -> str:
-        return _VENDING_SUBSTRATE_ENDGAME
-
-    def probe_substrate_prompt(self) -> str:
-        from Scroll.benchmarks.vending.tasks.rewards import VENDING_PROBE_FORMAT
-        return VENDING_PROBE_FORMAT
+    # Vending no longer swaps the substrate prompt at probe time — the
+    # agent stays in its day-cycle conversation and a probe is just
+    # another user msg. The "run structure" rules are folded into
+    # ``_VENDING_CONTEXT`` and the scorer-shaped format reminder rides
+    # on ``probe_user_postscript``.
 
     def probe_user_postscript(self) -> str:
         from Scroll.benchmarks.vending.tasks.rewards import VENDING_PROBE_USER_POSTSCRIPT

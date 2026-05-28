@@ -32,17 +32,14 @@ _PyCF_ALLOW_TOP_LEVEL_AWAIT = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
 
 
 class EndOfSession(Exception):
-    """Raised by ``wait_for_next_session()`` inside the REPL.
+    """Raised from inside the REPL to end the current session early.
 
     The runtime catches it inside ``execute_cell`` and surfaces a
     ``CellResult(session_ended=True)`` instead of treating it as an error.
+    Kept as a defensive primitive — the REPL does not bind any helper
+    that raises it; the session-loop's documented termination signal is
+    "emit a response with no code block" (see ``CodeActAgent``).
     """
-
-
-# Back-compat alias — agent system prompts mention ``EndOfDay`` /
-# ``wait_for_next_day`` by name. Keep the old name so any external
-# code or stored prompt that references it continues to import.
-EndOfDay = EndOfSession
 
 
 @dataclass
@@ -113,25 +110,6 @@ def _truncate(text: str, limit: int, label: str = "output") -> str:
         f"{head}\n... ({label} truncated: {omitted} chars omitted, "
         f"{len(text)} total) ...\n{tail}"
     )
-
-
-_FENCED_PY = re.compile(
-    r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE
-)
-
-
-def extract_python_block(text: str) -> str | None:
-    """Pull fenced ``python`` block(s) out of an LM response.
-
-    If multiple blocks are present, they are concatenated with blank
-    lines between (the LM is expected to produce one block per turn,
-    but tolerate accidents). If no fences are present, return None —
-    the agent's turn is treated as final / no-op.
-    """
-    matches = _FENCED_PY.findall(text or "")
-    if not matches:
-        return None
-    return "\n\n".join(m.strip() for m in matches if m.strip()) or None
 
 
 class CellRuntime:
@@ -385,32 +363,8 @@ def _format_namespace_hint(
     return ""
 
 
-# Default builders helpers — used by CodeActAgent to wire the namespace.
-
-def build_wait_for_next_session():
-    """Return a closure that raises EndOfSession when called."""
-    def wait_for_next_session():
-        """End the current session and advance to the next one.
-
-        Call this after you have finished all actions for the session.
-        Any Python code in the same cell after this call will not run.
-        """
-        raise EndOfSession()
-    return wait_for_next_session
-
-
-# Back-compat alias for the builder name. Agent system prompts mention
-# ``wait_for_next_day`` by name in many places; we'll also bind the new
-# name into the REPL alongside the old one (see CodeActAgent.init_namespace).
-build_wait_for_next_day = build_wait_for_next_session
-
-
 __all__ = [
     "CellResult",
     "CellRuntime",
     "EndOfSession",
-    "EndOfDay",  # back-compat alias
-    "build_wait_for_next_session",
-    "build_wait_for_next_day",  # back-compat alias
-    "extract_python_block",
 ]

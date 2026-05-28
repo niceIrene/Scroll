@@ -18,7 +18,7 @@
     "max_output_tokens": 4096,
     "context_max_tokens": 60000,
     "enable_playbook": false,
-    "enable_distillation": true
+    "enable_distillation": false
   },
   "data_sources": {},
   "benchmark": {

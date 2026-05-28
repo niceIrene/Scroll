@@ -52,8 +52,16 @@ src/Scroll/                     # framework
     │   └── tasks/probes.py     ProbeSpec list + LLM judge + compute_efficiency_metrics
     ├── vending/                env: long-horizon vending sim
     │   ├── ingestor.py        VendingIngestor + schema + env-snapshot serializer
-    │   ├── agents/agent.py    VendingAgent
-    │   ├── env.py, datasource.py, catalog.py, auto_ingest.py, tools.py
+    │   ├── env.py             VendingEnv + EnvConfig + Product (merged from
+    │   │                        old catalog.py)
+    │   ├── datasource.py     DataSourceManager + Mail (inbox + scheduled events)
+    │   ├── auto_ingest.py    per-table parse/INSERT helpers shared by the
+    │   │                        ingestor and any boundary hooks
+    │   ├── tools.py          env-action tool closures (send_email, restock,
+    │   │                        get_money_balance, run_sub_agent, ...)
+    │   ├── agents/agent.py    VendingAgent + the env-namespace builder
+    │   ├── agents/prompts.py  VENDING_CONTEXT, BASE_PROMPT, NAMESPACE_DOCS,
+    │   │                        vending_day_prompt (mirrors LME's prompts.py)
     │   └── tasks/probes.py     deterministic regex scorer
     └── beam/                   env: BEAM long-context chat-memory
         ├── ingestor.py        BeamIngestor + 5-table schema; subclasses
@@ -69,9 +77,9 @@ src/Scroll/                     # framework
 BaseAgent (abc)
   └── CodeActAgent           generic LLM-loop + REPL substrate
         └── ScrollAgent      adds memoryspace lifecycle + ingestor attachment
-              ├── LongMemEvalAgent     readonly_memoryspace=True, expose_rlm=True
-              ├── VendingAgent          expose_sub_llm=True (writable W)
-              └── BeamAgent             readonly_memoryspace=True, expose_rlm=True
+              ├── LongMemEvalAgent     expose_rlm=True
+              ├── VendingAgent          expose_rlm=True
+              └── BeamAgent             expose_rlm=True
 ```
 
 Subclasses provide three SCROLL hooks:
@@ -107,11 +115,6 @@ Scroll --config configs/beam/scroll.json                 --seed 1
 # Note: configs/longmemeval/ also has ``scroll.json`` (qwen3.6-plus baseline,
 # ~0.866) and ``scroll_qwen37max_m.json`` (production config pointed at the
 # M-split dataset).
-
-# Paper-number reproduction (one script per env)
-bash scripts/reproduce_longmemeval.sh
-bash scripts/reproduce_vending.sh
-bash scripts/reproduce_beam.sh
 
 # Offline rebuild — re-derives W from a persisted conversation_log.jsonl.
 # Result should be functionally equivalent to the W the agent saw at runtime;
@@ -207,7 +210,7 @@ shipped LME production config):
     "max_output_tokens": 4096,
     "context_max_tokens": 60000,
     "enable_playbook": false,          // LME-only: append distilled playbook block to probe prompt
-    "enable_distillation": true        // LME-only: write new procedural hints back after each probe
+    "enable_distillation": false       // LME-only: write new procedural hints back after each probe
   },
   "data_sources": {},
   "benchmark": {}
@@ -226,7 +229,7 @@ shipped LME production config):
 ## What's intentionally not here
 
 - **Baselines**: the earlier consolidation removed every non-SCROLL agent (basic, code_agent, agentscope_reme, rlm, database_*, adaptive*). Restoring one for paper comparison is a future task; see `docs/scroll.md` → "Why this is publishable" for context.
-- **vending/taubench-era scripts**: deleted (`extract_sft_pairs.py`, `generate_sweep_report.py`, sweep_*.sh, etc.). Current `scripts/` contains: `run_longmemeval.py` (multi-QA orchestrator), `run_parallel.py` (Docker-parallel sweep), `shard_lme_dataset.py` (one-time preprocessing), `rejudge_run.py` (re-score an existing run with the current judge), `test_rlm.py` (RLM wrapper smoke), and three `reproduce_*.sh` scripts.
+- **vending/taubench-era scripts**: deleted (`extract_sft_pairs.py`, `generate_sweep_report.py`, sweep_*.sh, etc.). Current `scripts/` contains: `run_longmemeval.py` (multi-QA orchestrator), `run_vending.py` (Docker-parallel sweep for Vending), `shard_lme_dataset.py` (one-time preprocessing), and `test_rlm.py` (RLM wrapper smoke).
 
 ## When editing the substrate
 
@@ -248,4 +251,4 @@ For behavior-parity checks on the LME side, pin the judge model to `gpt-4o-mini`
 
 ## Citation
 
-See `CITATION.cff`. License is Apache-2.0 (`LICENSE`).
+License is Apache-2.0 (`LICENSE`).

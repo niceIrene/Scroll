@@ -156,42 +156,24 @@ class AgentConfig:
     # migration.
     substrate: str = "codeact_rlm"
 
-    # X = f(E) memory mode. When None, uses the agent class's `memory_mode`
-    # default. JSON configs only set this to override the class default.
-    # Recognized values: "step" | "sliding". "step" wipes the LM history
-    # per session and relies on REPL globals for within-session
-    # continuity. "sliding" keeps history across sessions and trims
-    # oldest turns when over the context budget — the passive
-    # `f = mem(E)` baseline.
-    memory_mode: str | None = None
-
-    # Cross-task memoryspace persistence. Path to a JSON file shared across
-    # multiple independent task runs (e.g. LongMemEval's per-QA sub-runs
-    # under one orchestrator invocation). When set, ``CodeActAgent``
-    # subclasses that opt in via ``shared_memoryspace_keys`` will load
-    # selected memoryspace JSON keys at agent init and write them back at
-    # session end, with file locking for parallel-safe access.
-    shared_memoryspace_path: str | None = None
-
     # When False, ``LongMemEvalAgent._on_probe_complete`` early-returns
     # instead of distilling new procedural hints. Set to False when
     # running a weaker model with a pre-baked playbook (or hints from
     # a stronger model) — we want the model to READ the curated
-    # guidance but NOT pollute the shared store with its own
+    # guidance but NOT pollute the local store with its own
     # (lower-quality) distillations.
     enable_distillation: bool = True
 
     # When False, ``LongMemEvalAgent.probe_user_hint`` skips appending
     # the ``DISTILLED PLAYBOOK`` static block to the probe prompt. Set
     # to False for A/B variants that consume raw procedural_hints from
-    # the shared memoryspace instead of (or in addition to) the curated
+    # the per-task memoryspace instead of (or in addition to) the curated
     # playbook.
     enable_playbook: bool = True
 
     # Per-run override of ``LongMemEvalAgent.procedural_hints_in_prompt``
-    # (default 5 from the class attr). When None, the class default
-    # is used. Set higher for runs where the shared memoryspace is
-    # pre-seeded from a strong-model run with rich hints per qtype.
+    # (default 5 from the class attr). When None, the class default is
+    # used.
     procedural_hints_in_prompt: int | None = None
 
 

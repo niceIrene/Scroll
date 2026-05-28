@@ -30,7 +30,9 @@ from Scroll.core._codeact_agent import (
     _detect_cell_ops,
     _is_abstention_text,
     _tracer,
+    split_response_into_text_and_tools,
 )
+from Scroll.core._codeact_agent import EXECUTE_PYTHON_TOOL_NAME
 from Scroll.benchmarks.beam.ingestor import (
     BeamIngestor,
     ensure_schema as _beam_ensure_schema,
@@ -51,39 +53,6 @@ _log = logging.getLogger(__name__)
 
 # Memoryspace schema lives in :mod:`Scroll.benchmarks.beam.ingestor` —
 # identical shape to LongMemEval (both are chat-memory benchmarks).
-
-
-# ---------------------------------------------------------------------------
-# Probe-time tool schema (identical to LongMemEval — same retrieval shape).
-# ---------------------------------------------------------------------------
-
-_EXECUTE_PYTHON_TOOL_NAME = "execute_python"
-
-_EXECUTE_PYTHON_TOOL_SCHEMA: dict = {
-    "type": "function",
-    "function": {
-        "name": _EXECUTE_PYTHON_TOOL_NAME,
-        "description": (
-            "Execute a Python snippet in the persistent REPL to answer "
-            "the probe. Use it to query ``ms`` / ``log`` and call "
-            "``await rlm(...)``. REPL globals persist across calls. "
-            "Pass ONLY Python source as ``code`` — no markdown fences, "
-            "no prose."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "description": (
-                        "Python source. Use ``print(x)`` to surface values."
-                    ),
-                },
-            },
-            "required": ["code"],
-        },
-    },
-}
 
 
 # ---------------------------------------------------------------------------
@@ -257,11 +226,6 @@ ms — memoryspace handle (read-only):
       SELECT / PRAGMA / EXPLAIN / WITH only.
       params MUST be a tuple (trailing comma for single param).
   ms.vector_query(query, top_k=5) -> list[tuple[key, text, score]]
-  ms.json_read(key) -> Any         (KeyError if missing)
-  ms.json_list() -> list[str]
-  ms.file_read(name) -> str
-  ms.file_list() -> dict[str, int]
-  ms.schema_inspect() -> dict
 
 log — LogHandle (read-only view of E):
   log.slice(day=None, role=None, kind=None) -> list[LogEntry]
@@ -282,8 +246,8 @@ rlm(query: str, *, context: str = "") -> str   (async — MUST `await`)
 extract_time_range(question: str) -> dict | None   (async; `await`)
   Returns {"start", "end"} ISO dates or None.
 
-wait_for_next_day()
-  Ends day; auto-advanced for BEAM, rarely needed in practice.
+Session termination: emit a response with NO Python code block. The
+CodeAct loop reads that as "I'm done with this batch" and advances.
 """
 
 
@@ -308,8 +272,7 @@ class BeamAgent(ScrollAgent):
     runs are single-pass.
     """
 
-    # SCROLL feature flags
-    readonly_memoryspace = True
+    # SCROLL feature flag
     expose_rlm = True
 
     sys_prompt = BASE_PROMPT
@@ -369,9 +332,8 @@ class BeamAgent(ScrollAgent):
         return rows[0]["session_ts_iso"] if rows else None
 
     def _probe_sys_prompt(self) -> str:
-        # Same as LongMemEval — drop the base ``PROBE_SUBSTRATE_PROMPT``
-        # prelude (built for fenced-block substrate; we're using
-        # tool-calls).
+        # Mirror LongMemEval — tool-call substrate doesn't need a
+        # separate "probe mode" prelude.
         parts: list[str] = []
         env_probe = self._env_probe_prompt()
         if env_probe:
@@ -387,34 +349,6 @@ class BeamAgent(ScrollAgent):
 
     # ----- Probe loop (tool-call format, identical to LongMemEval) -----
 
-    async def _call_probe_model(self, msgs: list):
-        last_err: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                return await self._model(
-                    msgs,
-                    tools=[_EXECUTE_PYTHON_TOOL_SCHEMA],
-                    tool_choice="auto",
-                )
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                err_str = str(e).lower()
-                is_quota = any(
-                    s in err_str
-                    for s in ("429", "quota", "rate", "insufficient")
-                )
-                if attempt < 3 and is_quota:
-                    delay = 15 * attempt
-                    _log.warning(
-                        "BeamAgent probe model quota error (attempt %d/3): "
-                        "%.150s — backing off %ds",
-                        attempt, e, delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                raise
-        raise last_err  # type: ignore[misc]
-
     async def _answer_probe_inner(self, max_iters: int) -> str:
         last_text = ""
         last_stdout = ""
@@ -422,7 +356,7 @@ class BeamAgent(ScrollAgent):
         zero_cell_abstain_forced = False
 
         for it in range(max_iters):
-            response = await self._call_probe_model(self._history)
+            response = await self._call_model(self._history)
 
             text_parts: list[str] = []
             tool_use_blocks: list[dict] = []
@@ -477,7 +411,7 @@ class BeamAgent(ScrollAgent):
                     "id": tc_id,
                     "type": "function",
                     "function": {
-                        "name": block.get("name") or _EXECUTE_PYTHON_TOOL_NAME,
+                        "name": block.get("name") or EXECUTE_PYTHON_TOOL_NAME,
                         "arguments": json.dumps({"code": code}),
                     },
                 })
@@ -538,7 +472,7 @@ class BeamAgent(ScrollAgent):
                 )
                 with _tracer.start_as_current_span(span_name) as span:
                     span.set_attributes({
-                        "tool.name": _EXECUTE_PYTHON_TOOL_NAME,
+                        "tool.name": EXECUTE_PYTHON_TOOL_NAME,
                         "cell.day": self._current_session,
                         "cell.iter": it,
                         "cell.tool_idx": idx,

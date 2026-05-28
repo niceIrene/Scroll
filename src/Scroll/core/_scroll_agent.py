@@ -74,18 +74,23 @@ _READ_ONLY_SQL_PREFIXES = ("SELECT", "PRAGMA", "EXPLAIN", "WITH")
 
 
 class _ReadOnlyMemoryspace:
-    """Read-only proxy over a :class:`Memoryspace`.
+    """Minimal query-only proxy over a :class:`Memoryspace`.
 
     The harness writes via the raw memoryspace (``agent.memoryspace``); the
-    agent's REPL sees this proxy under ``ms`` / ``memoryspace``. Any write
-    attempt (``INSERT``, ``UPDATE``, ``json_write``, ``vector_store_add``,
-    ``file_write``) raises ``PermissionError``. Scratch state should live
-    in Python locals (cleared at day boundary).
+    agent's REPL sees this proxy under ``ms`` / ``memoryspace``. The
+    agent-facing surface is intentionally tiny:
+
+      - :meth:`sql_exec` (SELECT / PRAGMA / EXPLAIN / WITH only)
+      - :meth:`vector_query`
+
+    Any other access — including ``json_read`` / ``file_read`` /
+    ``schema_inspect`` and any write — raises ``AttributeError`` or
+    ``PermissionError``. Scratch state should live in Python locals
+    (cleared at the next session boundary).
     """
 
     def __init__(self, ms: Memoryspace) -> None:
         self._ms = ms
-        self.sqlite = ms.sqlite
 
     def sql_exec(self, statement: str, params: tuple | None = None):
         first = (
@@ -103,34 +108,6 @@ class _ReadOnlyMemoryspace:
 
     def vector_query(self, query, top_k: int = 5):
         return self._ms.vector_query(query, top_k)
-
-    def json_read(self, key):
-        return self._ms.json_read(key)
-
-    def json_list(self):
-        return self._ms.json_list()
-
-    def file_read(self, name):
-        return self._ms.file_read(name)
-
-    def file_list(self):
-        return self._ms.file_list()
-
-    def schema_inspect(self):
-        return self._ms.schema_inspect()
-
-    def _denied(self, method: str) -> None:
-        raise PermissionError(
-            f"memoryspace.{method} is not available: the memoryspace is "
-            f"fully READ-ONLY (the harness auto-ingests every session). "
-            f"For within-cell scratch state, use Python variables — they "
-            f"live until the next day boundary."
-        )
-
-    def json_write(self, *_a, **_kw): self._denied("json_write")
-    def vector_store_add(self, *_a, **_kw): self._denied("vector_store_add")
-    def vector_delete(self, *_a, **_kw): self._denied("vector_delete")
-    def file_write(self, *_a, **_kw): self._denied("file_write")
 
 
 # ---------------------------------------------------------------------------
@@ -173,14 +150,21 @@ class ScrollAgent(CodeActAgent):
       - :meth:`namespace_docs` (already on ``CodeActAgent``) — docs
         about the REPL primitives
 
+    The agent's REPL always sees a minimal query-only view of ``ms``
+    (:class:`_ReadOnlyMemoryspace` — only ``sql_exec`` + ``vector_query``).
+    The harness owns all writes via ``self.memoryspace`` directly.
+
     Toggle harness features via class-level flags:
-      - ``readonly_memoryspace`` — wrap ``ms`` with :class:`_ReadOnlyMemoryspace`
       - ``expose_rlm`` — bind ``rlm`` into the REPL (requires ``dspy`` extra)
     """
 
     # ----- harness feature toggles (override in subclasses) -----
-    readonly_memoryspace: bool = False
     expose_rlm: bool = False
+
+    # ``tools_schema`` is inherited from CodeActAgent — it owns the
+    # ``execute_python`` tool definition since that's the Python-REPL
+    # protocol, not a memoryspace concern. Subclasses with additional
+    # tools may extend it.
 
     # ----- Ingestor class (subclass override) -----
     # The per-env ``f: E → W`` derivation. Constructed as
@@ -189,9 +173,6 @@ class ScrollAgent(CodeActAgent):
     # override this. Default ``None`` is a no-op ingestor (W stays
     # empty) — used only by tests that don't exercise ingest.
     ingestor_cls: type[Ingestor] | None = None
-
-    # ----- CodeActAgent defaults that fit the SCROLL pattern -----
-    memory_mode: str = "step"
 
     # ----- lifecycle -----
 
@@ -255,11 +236,10 @@ class ScrollAgent(CodeActAgent):
     def init_namespace(self) -> dict:
         ns = dict(self._base_namespace())
         ns["log"] = LogHandle(self.log)
-        ms_handle: Any = (
-            _ReadOnlyMemoryspace(self.memoryspace)
-            if self.readonly_memoryspace
-            else self.memoryspace
-        )
+        # Agent-facing ms is always the minimal query-only view: SQL +
+        # vector. Ingestion / write paths use ``self.memoryspace``
+        # directly (raw Memoryspace), never the REPL handle.
+        ms_handle: Any = _ReadOnlyMemoryspace(self.memoryspace)
         ns["memoryspace"] = ms_handle
         ns["ms"] = ms_handle
         if self.expose_rlm:
@@ -318,9 +298,9 @@ class ScrollAgent(CodeActAgent):
             ))
 
     def _base_namespace(self) -> dict:
-        """Override to provide env-specific tool closures (action tools,
-        ``wait_for_next_day``, etc.). Default: empty (pure-retrieval
-        envs like LongMemEval have no actions).
+        """Override to provide env-specific tool closures (action tools
+        like ``send_email``, ``run_sub_agent``, etc.). Default: empty
+        (pure-retrieval envs like LongMemEval have no actions).
         """
         return {}
 

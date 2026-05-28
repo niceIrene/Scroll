@@ -3,13 +3,13 @@
   "simulation": {
     "dataset_path": "external/longmemeval/data/longmemeval_s_cleaned.json",
     "question_index": 0,
-    "judge_model": "qwen3.6-plus",
+    "judge_model": "qwen3.7-max",
     "judge_api_key_env": "US_DASHSCOPE_API_KEY",
     "judge_api_base": "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
   },
   "agent": {
     "policy": "scroll",
-    "qwen_model_name": "qwen3.6-plus",
+    "qwen_model_name": "deepseek-v4-pro",
     "qwen_api_key_env": "CN_DASHSCOPE_API_KEY",
     "qwen_api_base_env": "CN_DASHSCOPE_BASE_URL",
     "enable_thinking": false,
@@ -18,7 +18,7 @@
     "max_output_tokens": 4096,
     "context_max_tokens": 60000,
     "enable_playbook": false,
-    "enable_distillation": true
+    "enable_distillation": false
   },
   "data_sources": {},
   "benchmark": {

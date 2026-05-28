@@ -167,6 +167,7 @@ def run_single(
     checkpoint: bool = True,
     output_dir: str | None = None,
     env_id: str = "longmemeval",
+    keep_logs: bool = True,
 ) -> RunStats:
     policy = agent_cfg.policy
     # Root span name mirrors the on-disk layout but always includes the
@@ -184,7 +185,7 @@ def run_single(
         _t0 = time.perf_counter()
         stats = _run_single_inner(
             run_span, seed, env_cfg, agent_cfg, data_cfg,
-            fresh, checkpoint, output_dir, env_id,
+            fresh, checkpoint, output_dir, env_id, keep_logs,
         )
         wall_seconds = round(time.perf_counter() - _t0, 2)
         # Surface end-to-end per-QA wall time as part of efficiency so
@@ -226,6 +227,7 @@ def _run_single_inner(
     checkpoint: bool,
     output_dir: str | None,
     env_id: str,
+    keep_logs: bool = True,
 ) -> RunStats:
     policy = agent_cfg.policy
     run_span.set_attributes({
@@ -246,7 +248,15 @@ def _run_single_inner(
     }
     cfg_hash = config_hash(cfg_dict)
 
-    jsonl_path = Path(output_dir) / "conversation_log.jsonl" if output_dir else None
+    # ``conversation_log.jsonl`` is the full E (event log). It's only
+    # needed for offline ``Scroll rebuild-w`` / trace inspection — at
+    # 500-QA × 500-session-M scale it eats ~100GB+ of disk. Gate on
+    # ``keep_logs`` (default True for backward compat; orchestrator
+    # disables by default via --no-checkpoint).
+    jsonl_path = (
+        Path(output_dir) / "conversation_log.jsonl"
+        if (output_dir and keep_logs) else None
+    )
 
     # Try to resume from checkpoint
     resumed = False
@@ -297,13 +307,18 @@ def _run_single_inner(
         # LongMemEval has a fixed-length session loop (N session-days + 1
         # probe day) governed by env.is_terminal(); always use the
         # session-count loop.
+        # When ``keep_logs`` is False, hide ``output_dir`` from the
+        # session loop so it skips writing ``session_logs.jsonl``
+        # (and per-session checkpoint subdirs). ``probe_results.json``
+        # is written outside this call, so it's unaffected.
+        loop_output_dir = output_dir if keep_logs else None
         active_sessions = _run_session_loop(
             env, agent, data, log, env_cfg,
             is_llm, policy, seed, snapshots, probe_results,
             per_session_action_logs,
             get_probes_for_session=entry.get_probes_for_session,
-            checkpoint=checkpoint,
-            output_dir=output_dir,
+            checkpoint=checkpoint and keep_logs,
+            output_dir=loop_output_dir,
             cfg_hash=cfg_hash,
         )
     finally:

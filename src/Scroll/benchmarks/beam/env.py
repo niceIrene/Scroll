@@ -29,10 +29,9 @@ RUN STRUCTURE — BEAM (Beyond a Million Tokens):
   temporal reasoning, abstention, contradiction resolution, event
   ordering, instruction following, preference following,
   summarization), so save anything you might want to recall.
-- After your bookkeeping (or choosing not to), call
-  ``wait_for_next_day()`` to advance to the next batch. The function
-  name is shared with the vending env's day-clock; in BEAM it just
-  advances the batch pointer.
+- After your bookkeeping (or choosing not to), emit a response with
+  NO ``python`` code block. The CodeAct loop treats that as the
+  end-of-batch signal and advances the batch pointer.
 - At the END of the run multiple probing questions fire in
   sequence; reply formatting rules will be in the probe-mode system
   prompt that swaps in then.

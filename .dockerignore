@@ -1,6 +1,38 @@
+# Datasets and run outputs — huge, never needed in the image.
+# (Dockerfile only copies pyproject.toml + src/ + configs/ anyway, but
+# Docker uploads the entire build context to the daemon BEFORE running
+# the Dockerfile, so unignored large files would tar+upload ~15GB and
+# can crash Docker Desktop on Mac.)
+external/
 output/
+
+# Python build artifacts
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets and local config
 .env
+.env.local
+
+# Git + IDE
 .git/
+.gitignore
+.idea/
+.vscode/
+
+# Mac / OS noise
+.DS_Store
+
+# Docs / design — not needed at runtime
+design/
+docs/
+*.md
+!README.md

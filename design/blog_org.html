@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Scroll: Session-as-Context, Recoverable Off-context LLM Log</title>
+<title>The Python REPL is the Memory API — CodeAct for Memory Management &amp; Scripts as Procedural Memory</title>
 <style>
   :root {
     --fg: #1d1d1f;
@@ -470,35 +470,21 @@
 <body>
 <div class="container">
 
-<h1>Scroll: Session-as-Context, Recoverable Off-context LLM Log</h1>
-<p class="subtitle">An unlimited session log — without the accuracy cliff of context compaction</p>
-<p class="deck">Imagine an agent whose session log grows without bound, and whose accuracy doesn't decay as it does — because nothing is being summarized, truncated, or evicted to make the context fit. That is the goal Scroll is built around. Today every long-horizon agent makes the same tradeoff: either the context window holds the full session (and the session has to stay small), or the session is compacted to fit (and information is lost as it grows). Scroll moves the session out of the context window entirely: an append-only event log <code>E</code> with a derived memoryspace <code>W = build(E)</code>, queried by the agent through a Python REPL. The agent never reads the haystack — only the rows a query returns. On the LongMemEval-S benchmark (~115K tokens/QA, 500 QAs), Scroll achieves <strong>0.918 accuracy with deepseek-v4-pro</strong> and <strong>0.908 with qwen3.7-max</strong>, with the remaining gap concentrated in multi-session counting and temporal reasoning — both downstream of retrieval.</p>
+<h1>The Python REPL is the Memory API</h1>
+<p class="subtitle">CodeAct for Memory Management &amp; Scripts as Procedural Memory</p>
+<p class="deck">CodeMe gives long-horizon agents a set of storage primitives — SQL, vectors, files, JSON — and at each turn the agent <em>writes Python</em> to decide which surface to query, in what combination, with what filters. The full <strong>LongMemEval-S (500 QAs, ~115K tokens each) runs for $9.6 at 87.6% accuracy</strong>; the full <strong>LongMemEval-M (500 QAs, ~1.5M tokens each) for $12.6 at 77.6%</strong> with Qwen3.6-plus. The cost stays low because the model never reads the haystack — ingest-time structured storage compresses sessions into an index, so the LLM programmatically examines only the relevant slices of the long-term history: ~3.7 CodeAct reasoning steps and 40.8K prompt tokens per QA.</p>
 
 
 <div class="tldr">
   <span class="tldr-label">tl;dr</span>
-  <p style="margin: 4px 0 0 0;">The structural bet behind that goal: an immutable append-only event log <code>E</code> is the system of record, a queryable memoryspace <code>W = build(E)</code> is derived from it, and the agent picks a query for each question instead of consuming a pre-built retrieval pipeline. No compaction step, no eviction policy, no summarization loss — every prior session is addressable by query. Empirically on LongMemEval-S 500 QAs: <strong>0.918 overall with deepseek-v4-pro</strong> and <strong>0.908 with qwen3.7-max</strong>, same scaffold, only the agent model name differs. The residual gap concentrates in multi-session counting and temporal reasoning, dominated by failures in the agent's procedural code — not retrieval — so it is closable without changing the substrate. <strong>The session log handles continuity within a single long-horizon task</strong>: addressing any prior session is a query against <code>E</code>, not a recall.</p>
+  <p style="margin: 4px 0 0 0;">Every modern memory system — Mem0, Zep, Hindsight, Supermemory, Mastra OM — settles on one retrieval pipeline at build time and ships it. <strong>CodeMe</strong> does the opposite: keep the storage primitives (SQL, vectors, files, JSON), but let the agent <em>write Python</em> at every turn to decide which surface to query, in what order, with what filters. The retrieval pipeline is whatever the agent writes today. On LongMemEval-S (500 QAs, ~115K tokens each) CodeMe scored <strong>0.874</strong> with qwen3.6-plus; on LongMemEval-M (~1.5M tokens) <strong>0.776</strong>, where most published systems don't report at all — the leaderboard leader at S (Mastra OM at 94.87%) is a context-only approach that compresses the conversation into a stable prompt, which doesn't scale to 1.5M-token haystacks. CodeMe works on both splits because the agent never reads the full haystack, just indexed query results. Cost: <strong>~3.4 LM calls and ~40.8K prompt tokens per QA</strong> — driven by what the architecture asks of the model, not by model size.</p>
 </div>
 
 <hr>
 
-<h2>How long sessions are handled today</h2>
+<h2>Where memory systems are today</h2>
 
-<p>Most production agent harnesses — Claude Code, Codex, Cursor, the major chat clients — ship the same three-part memory model.</p>
-
-<ul>
-  <li><strong>Inside a session: context compaction.</strong> When the context window fills, older turns are summarized into a compressed block and the originals drop out of the active prompt. The summary is what the agent sees from that point on; the originals are no longer addressable from the agent's side.</li>
-  <li><strong>After a session: a write-only disk log.</strong> The full unsummarized transcript is persisted to disk for audit, replay, and debugging — but the agent itself never reads back from that file. The disk log is for humans (engineers reviewing failures, evaluators replaying runs), not for the agent.</li>
-  <li><strong>Across sessions: a thin memory surface, optionally augmented by a plugin.</strong> The harness exposes a small mutable "memory" the agent can write notes to (a key-value scratch, or a free-form text buffer), or it hands continuity off to a memory plugin (Mem0, Letta, similar) that runs offline between sessions and pre-fetches what it predicts will be relevant into the next session's opening prompt.</li>
-</ul>
-
-<p>Each piece is rational in isolation. Compaction is the only way to make a multi-hour session fit a 200K-token window. Disk persistence is required for reproducibility. Memory plugins handle return visits. But together they form an asymmetry: <strong>the most complete record of the agent's history — the disk log — is the one place the agent cannot look.</strong> The compacted prompt loses information by design; the memory plugin's pre-fetch is a guess made before the agent knows what it needs; the unaltered ground truth on disk is excluded from the agent's interface by convention. The agent works from a lossy projection of its own history.</p>
-
-<p>Scroll keeps the same three pieces — context window, disk log, cross-session view — but reorients them. The disk log becomes the agent's primary memory surface, not a write-only archive: the agent queries <code>E</code> directly through the Python REPL. Cross-session continuity is a view derived from the log (the memoryspace <code>W = build(E)</code>), refreshable on every read, not a guess pre-fetched by a plugin. And compaction stops being load-bearing — when the agent needs older context, it queries <code>E</code> instead of re-summarizing what was already compressed away. The next section walks through how dedicated memory systems try to fix the same asymmetry from the plugin side, and where their fixes hit a ceiling.</p>
-
-<h2>Position vs. prior work</h2>
-
-<p>The literature on agent memory has explored a wide design space — single-channel vector RAG, hybrid multi-strategy + reranker, tool-augmented retrieval, knowledge graph, full-context compression — but every system in production today commits at build time to <em>one</em> retrieval pipeline that ships unchanged for every query the agent will ever issue. The design choice is the pipeline; the agent gets to call it. Sorted by how much pre-built machinery sits between the agent and the conversation log:</p>
+<p>The last two years of "agent memory" research can be sorted into a handful of implementation types, separated by one design choice: how much pre-built machinery do you put between the agent and the conversation log?</p>
 
 <table>
   <thead>
@@ -516,73 +502,49 @@
   </tbody>
 </table>
 
-<p><strong>Complexity does not monotonically help.</strong> Zep's temporal knowledge graph underperforms simple multi-strategy RAG by a wide margin, and "advanced architecture is overkill for LongMemEval" has become a recurring observation in the field. What every system above shares — regardless of where it lands — is the implicit assumption that <em>retrieval is a service</em>: one call, one response, designed once at build time and serving every probe identically afterward.</p>
+<p><strong>Complexity doesn't monotonically help.</strong> Zep's temporal knowledge graph underperforms simple multi-strategy RAG by a wide margin, and "advanced architecture is overkill for LongMemEval" is by now a recurring observation in the field. Sophistication for its own sake hurts.</p>
 
-<p>The S split (~115K tokens) makes this assumption look benign. The M split (~1.5M tokens, 13× larger) is where it breaks: the context-compression frontrunner stops fitting; the multi-strategy stacks have to discriminate harder against more decoys per probe and lose accuracy; almost no published system reports M numbers at all. The honest reading of the table is not "Mastra OM scores 94.87%" — it is "every entry on the table degrades or fails to fit as session length grows; the only question is where each curve bends." Scaling session length without bending the curve is the architectural problem Scroll is built around.</p>
+<h2>Where we sit</h2>
 
-<h2>Scroll: session as a recoverable, addressable context store</h2>
+<blockquote class="pull">LLM coding and orchestration ability is improving rapidly. A fixed retrieval pipeline captures one point in that curve — to do better, someone has to redesign it. CodeMe's retrieval logic is whatever Python the agent writes today: as models get better at composing SQL, vector queries, and sub-LLM calls, so does the retrieval, without touching the architecture. </blockquote>
 
-<blockquote class="pull">A session in Scroll is not a transient transcript. It is a recoverable, addressable, logically unlimited context store — the harness delivers the semantic promise of "context" to the agent without the physical limits of a window.</blockquote>
+<p>The dimension along which we differ from every system in the table above is <em>who writes the retrieval code</em>.</p>
 
-<p>Scroll's position is orthogonal to the axis above. Rather than choosing a retrieval pipeline at build time, Scroll commits to a <em>substrate</em> — a durable session — and lets the agent author its retrieval procedure at runtime in Python. None of the substrate's pieces are new: it is the <strong>event-sourcing pattern</strong> (system of record = log; views = projections of the log) applied to agent memory. What is new is making the log a first-class addressable surface for the agent, with a Python REPL for both reading and projecting it.</p>
+<p>Most systems above fix the retrieval pipeline at build time. ReMe and MemGPT/Letta let the LLM decide when and how often to call retrieval tools — but the tools themselves are still a fixed API the designer chose in advance.</p>
 
-<h3>The session as <code>(E, W)</code></h3>
-
-<p>Formally, a Scroll session is a pair:</p>
+<p>In CodeMe, the agent's interface to memory <em>is Python</em>. It has retrieval primitives:</p>
 
 <ul>
-  <li><strong><code>E</code> — append-only event log.</strong> Every user turn, agent action, observation, and retrieved row is recorded as a typed entry, in order. <code>E</code> is immutable: nothing is overwritten or deleted.</li>
-  <li><strong><code>W = build(E)</code> — derived memoryspace.</strong> A working state — SQL tables, vector indices, file blobs, JSON state — that the agent populates and queries. <code>W</code> is mutable, fast, and disposable; the substrate guarantees that for any prefix of <code>E</code>, replaying it produces a functionally equivalent <code>W</code>.</li>
-</ul>
-
-<p>The invariant is that <code>E</code> is ground truth and <code>W</code> is a view. Schema migrations, ingestor rewrites, and memoryspace corruption are recoverable by rebuilding <code>W</code> from <code>E</code>. Working state can be denormalized, indexed, or restructured freely without losing history — the conventional tradeoff between "store the conversation" and "store a derived index" disappears, because Scroll stores both with a derivation arrow between them. (The CLI <code>Scroll rebuild-w</code> exercises this invariant offline; it is the canonical correctness test.)</p>
-
-<h3>The session log handles continuity within a single long-horizon task</h3>
-
-<p>A "task" in our formulation is one Scroll run. It spans many sessions; each session is a coherent chunk of agent activity — one chat session in LongMemEval, one calendar day in a vending simulation, one batch in BEAM. Across sessions, <code>E</code> grows monotonically; the memoryspace catches up by replaying any unprocessed tail of <code>E</code> on every read.</p>
-
-<p>Continuity is not a separate mechanism. It falls out of the log+derive invariant: at any turn in any future session, the agent can address any prior session by writing the right Python query — there is no notion of "forgetting" because nothing is deleted, only re-indexed. This is the central claim Scroll makes about long-horizon agents: <em>the memory boundary between sessions does not exist at the substrate level</em>. It exists only as a choice the agent makes about which slice of <code>E</code> or <code>W</code> to bring into its current context window.</p>
-
-<h3>The agent's interface is a Python REPL</h3>
-
-<p>The agent reads and writes through a CodeAct harness with the following primitives bound in the REPL namespace:</p>
-
-<ul>
-  <li><code>log.slice(session_idx, kind)</code> / <code>log.semantic_search(q)</code> / <code>log.findall(regex)</code> — read-only views of <code>E</code>.</li>
-  <li><code>memoryspace.sql_exec(stmt, params)</code> — read-write SQL against an in-memory SQLite (the dominant primitive in practice).</li>
+  <li><code>memoryspace.sql_exec(stmt, params)</code> — read-write SQL against an in-memory SQLite.</li>
   <li><code>memoryspace.vector_query(q, top_k)</code> / <code>vector_store_add(key, text)</code> — bag-of-words vector store.</li>
-  <li><code>memoryspace.json_write(key, data)</code> / <code>json_read(key)</code>, <code>file_write</code> / <code>file_read</code> — typed key/value and blob storage.</li>
-  <li><code>await rlm(prompt)</code> — sub-LM delegation for extraction, ranking, or generation from within a code cell, without re-passing the full context.</li>
+  <li><code>memoryspace.json_write(key, data)</code> / <code>json_read(key)</code> — nested-dict storage.</li>
+  <li><code>memoryspace.file_write(name, content)</code> / <code>file_read(name)</code> — raw text blobs.</li>
+  <li><code>log.slice(day, kind)</code> / <code>log.semantic_search(q)</code> / <code>log.findall(regex)</code> — read-only views of the unified event log <code>E</code>.</li>
+  <li><code>await rlm(prompt)</code> — the RLM primitive for delegating sub-tasks (extraction, ranking, generation) from within a code cell, without re-passing the full context.</li>
 </ul>
 
-<p>At each turn — both during ingest, when the agent shapes <code>W</code>, and at probe time, when it queries <code>W</code> and <code>E</code> — the agent decides which primitives to invoke and how to combine them. There is no fixed pipeline. A retrieval cell at probe time might look like:</p>
+<p>At each turn — both during ingest and at probe time — the agent decides which of these to use, in what combination, with what filters. There's no fixed pipeline. A retrieval cell at probe time might look like:</p>
 
 <pre><code>sql_hits  = memoryspace.sql_exec(
-    "SELECT session_idx, content FROM chat_turns WHERE content LIKE ?",
+    "SELECT day, content FROM chat_turns WHERE content LIKE ?",
     params=(f"%{keyword}%",))
 vec_hits  = memoryspace.vector_query(question_paraphrase, top_k=8)
 log_hits  = log.semantic_search(question, kind="chat_turn", k=10)
 candidates = merge_dedup(sql_hits, vec_hits, log_hits)
 ranked = await rlm(f"Rank by relevance to {question}:\n{candidates}")</code></pre>
 
-<p>Or it might be a single <code>SELECT</code> from a denormalized observations table. Or a regex over the raw log. The agent picks per probe; on the same QA on a different day it may pick differently. This is CodeAct (Wang et al.) applied to memory operations: existing memory systems treat memory as an external service called through a fixed API, while Scroll treats it as a Python REPL with a SQL connection and a log handle.</p>
+<p>Or it might just be a single <code>SELECT</code> from a denormalized observations table. Or a regex over the raw log. The agent picks per probe, and on the same QA on a different day it may pick differently.</p>
 
-<h3>Contribution</h3>
+<p>This isn't conceptually new — it's just CodeAct (Wang et al.) applied to memory operations instead of tool calls. Existing memory systems generally don't take the CodeAct interface seriously because they treat memory as an external service. We treat it as a Python REPL with a SQL connection.</p>
 
-<p>Three claims, evaluated in the rest of this post:</p>
+<blockquote class="pull">An analogy: existing memory systems give the agent a notes app with a GUI. CodeMe gives the agent a shell and a database. The latter demands a stronger agent — but the ceiling is much higher.</blockquote>
 
-<ol>
-  <li><strong>Substrate, not pipeline.</strong> A long-horizon agent's memory should be a recoverable context store (<code>E</code> + <code>W = build(E)</code>) with a code-level interface, not a fixed retrieval pipeline behind an opaque API. The substrate is what is durable across model generations; the retrieval logic is whatever the model writes today.</li>
-  <li><strong>Continuity is a query, not a recall.</strong> Because <code>E</code> is append-only and <code>W</code> is re-derivable, continuity within a long-horizon task reduces to "the agent issues a query against an indexed log". There is no separate memory-management policy — no eviction, no summarization, no compression decision that has to be made eagerly and bet on later.</li>
-  <li><strong>Substrate is model-agnostic.</strong> The session log + memoryspace + Python REPL stack is framework-agnostic. The agent never reads the haystack; it reads the rows returned by a query. On LongMemEval-S (115K tokens/QA), Scroll reaches 0.908 — competitive with multi-stage pipelines that pre-build retrieval structures, with a single Python cell per turn.</li>
-</ol>
-
-<p>The substrate is framework-agnostic. The ingest layer consumes <code>E</code>, which any agent framework produces; the memory primitives are pluggable; the only requirement on the agent side is a CodeAct REPL.</p>
+<p>This design generalizes cleanly. The ingest layer is framework-agnostic: it reads from the conversation log <code>E</code>, which any agent framework produces. The memory primitives — SQL tables, vector index, JSON store — are a pluggable component; nothing in the storage layer is specific to any orchestration framework. The one requirement on the agent side is a CodeAct substrate: the agent needs to be able to execute Python. Any agent that can run a REPL can use CodeMe's memory primitives without modification.</p>
 
 
-<h2>The numbers</h2>
+<h2>The numbers (Qwen3.6-plus)</h2>
 
-<p class="meta">LongMemEval-S, full 500 QAs (including abstention twins), judge = qwen3.6-plus, US Dashscope endpoint.</p>
+<p class="meta">LongMemEval-S, full 500 QAs, judge = qwen3-max, US Dashscope endpoint.</p>
 
 <table>
   <thead>
@@ -599,24 +561,44 @@ ranked = await rlm(f"Rank by relevance to {question}:\n{candidates}")</code></pr
   </thead>
   <tbody>
     <tr>
-      <td>scroll · deepseek-v4-pro</td>
-      <td class="num best">0.918</td>
+      <td>code_auto · qwen3.6-plus</td>
+      <td class="num best">0.874</td>
+      <td class="num">0.859</td>
+      <td class="num">0.744</td>
+      <td class="num">1.000</td>
+      <td class="num">0.900</td>
+      <td class="num">0.957</td>
       <td class="num">0.910</td>
-      <td class="num">0.835</td>
-      <td class="num">0.946</td>
-      <td class="num">0.967</td>
-      <td class="num">0.971</td>
-      <td class="num">0.955</td>
     </tr>
     <tr>
-      <td>scroll · qwen3.7-max</td>
-      <td class="num">0.908</td>
-      <td class="num">0.936</td>
-      <td class="num">0.812</td>
+      <td>code_auto · qwen3.7-max</td>
+      <td class="num">0.874</td>
+      <td class="num">0.847</td>
+      <td class="num">0.793</td>
+      <td class="num">0.964</td>
+      <td class="num">0.933</td>
+      <td class="num">0.938</td>
+      <td class="num">0.882</td>
+    </tr>
+    <tr>
+      <td>code_auto · qwen3.6-max-preview</td>
+      <td class="num">0.872</td>
+      <td class="num">0.808</td>
+      <td class="num">0.782</td>
       <td class="num">0.982</td>
       <td class="num">0.967</td>
       <td class="num">0.957</td>
-      <td class="num">0.917</td>
+      <td class="num">0.887</td>
+    </tr>
+    <tr>
+      <td>code_auto · deepseek-v4-pro</td>
+      <td class="num">0.816</td>
+      <td class="num">0.846</td>
+      <td class="num">0.699</td>
+      <td class="num">0.946</td>
+      <td class="num">0.733</td>
+      <td class="num">0.943</td>
+      <td class="num">0.812</td>
     </tr>
   </tbody>
 </table>
@@ -628,7 +610,7 @@ ranked = await rlm(f"Rank by relevance to {question}:\n{candidates}")</code></pr
     <tr>
       <th>Model</th>
       <th class="num">basic (sliding history)</th>
-      <th class="num">scroll</th>
+      <th class="num">code_auto</th>
       <th class="num">lift</th>
     </tr>
   </thead>
@@ -656,11 +638,76 @@ ranked = await rlm(f"Rank by relevance to {question}:\n{candidates}")</code></pr
 
 <p>The basic agent has no tools — its only memory is sliding chat history with summary compression. The structured storage substrate adds +17–21pp across all model tiers.</p>
 
-<p>How to read these numbers: <strong>0.918 with deepseek-v4-pro</strong> and <strong>0.908 with qwen3.7-max</strong> both sit above EmergenceMem Internal (86% with gpt-4o), EmergenceMem Simple (82.4% with gpt-4o), Naive RAG (~80% with gpt-4o), and knowledge-graph approaches (71% Zep), and roughly match the frontier multi-strategy stack (Hindsight 91% with gemini-3-pro). Still below the no-retrieval frontier (Mastra OM 95% with gpt-5-mini). What's notable is the architecture: those numbers above Scroll come from multi-stage pipelines with rerankers and query decomposition, while Scroll matches them with a single Python cell that the agent writes per turn — and the same scaffold runs across both agent models with only the model name changing.</p>
+<p>How to read <strong>0.874 with qwen3.6-plus</strong>: it sits above EmergenceMem Internal (86% with gpt-4o) and EmergenceMem Simple (82.4% with gpt-4o), comfortably above Naive RAG (~80% with gpt-4o) and knowledge-graph approaches (71% Zep). Still below the no-retrieval frontier (Mastra OM 95% with gpt-5-mini) and frontier multi-strategy stacks (Hindsight 91% with gemini-3-pro). What's notable is the architecture: those numbers above CodeMe come from multi-stage pipelines with rerankers and query decomposition, while CodeMe matches them with a single Python cell that the agent writes per turn.</p>
+
+<h2>The M split: where most published systems don't run at all</h2>
+
+<p>LongMemEval-M is ~500 sessions and ~1.5M tokens per QA — 13× the size of S. Almost every published system reports only S numbers. The Zep team is unusually direct about why:</p>
+
+<blockquote class="pull">"Due to gpt-4o's 128,000 token context window limitation, we chose to use the LONGMEMEVAL_S dataset — containing approximately 115,000 tokens per problem — rather than the larger LONGMEMEVAL_M dataset with 1,500,000 tokens per problem."<br><span class="meta">— Zep team, 2025</span></blockquote>
+
+<p>CodeMe runs on M identically to S — same code, same prompts, same model. The agent never reads the full haystack; it reads the result of a query against an index.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Split</th>
+      <th class="num">Overall</th>
+      <th class="num">k-update</th>
+      <th class="num">multi-sess</th>
+      <th class="num">s-asst</th>
+      <th class="num">s-pref</th>
+      <th class="num">s-user</th>
+      <th class="num">temporal</th>
+      <th class="num">Prompt tok/QA</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>S (~115K tok)</td>
+      <td class="num">0.874</td>
+      <td class="num">0.859</td>
+      <td class="num">0.744</td>
+      <td class="num">1.000</td>
+      <td class="num">0.900</td>
+      <td class="num">0.957</td>
+      <td class="num">0.910</td>
+      <td class="num">43.9K</td>
+    </tr>
+    <tr>
+      <td>M (~1.5M tok)</td>
+      <td class="num">0.776</td>
+      <td class="num">0.821</td>
+      <td class="num">0.647</td>
+      <td class="num">1.000</td>
+      <td class="num">0.667</td>
+      <td class="num">0.914</td>
+      <td class="num">0.737</td>
+      <td class="num">57.3K</td>
+    </tr>
+    <tr>
+      <td>Δ (M − S)</td>
+      <td class="num">−10.0 pp</td>
+      <td class="num">−11.5 pp</td>
+      <td class="num">−9.7 pp</td>
+      <td class="num">+1.8 pp</td>
+      <td class="num">−26.6 pp*</td>
+      <td class="num">−5.7 pp</td>
+      <td class="num">−12.8 pp</td>
+      <td class="num">+30%</td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="meta">* The s-pref drop overstates the haystack effect: the M run was executed on an earlier prompt iteration that handled recommendation-style preference questions less well. On the same prompt as the S run we'd expect that delta to compress substantially. The other deltas are reading the haystack-size effect cleanly.</p>
+
+<p>13× input, ~10pp accuracy drop, 30% more tokens, <strong>$12.6</strong> total. The accuracy drop concentrates in temporal reasoning (−12.8 pp) and multi-session (−9.7 pp), where a larger haystack means more same-topic mentions to distinguish. Single-session question types hardly move.</p>
+
+<blockquote class="pull">The model isn't reading 1.5M tokens. It's reading the rows that came back from a <code>WHERE</code> clause.</blockquote>
 
 <h2>Procedural memory: distilling lessons across runs</h2>
 
-<p>One direction we explored is whether Scroll can accumulate knowledge across QAs — not just within a single run, but as transferable procedural memory. After each probe, a sub-LLM distills the successful trajectory into a structured lesson:</p>
+<p>One direction we explored is whether CodeMe can accumulate knowledge across QAs — not just within a single run, but as transferable procedural memory. After each probe, a sub-LLM distills the successful trajectory into a structured lesson:</p>
 
 <pre><code>{
   "qtype": "multi-session",
@@ -678,7 +725,7 @@ ranked = await rlm(f"Rank by relevance to {question}:\n{candidates}")</code></pr
   <li><strong>Top-K hints</strong> — at probe time, inject the top-K lessons from the shared store that match the current question type, filtered by polarity and source QA. The model sees concrete SQL templates, not abstractions.</li>
 </ul>
 
-<p class="meta">Results on 500-QA S split, scroll policy, seed=1.</p>
+<p class="meta">Results on 500-QA S split, code_auto_v2, seed=1.</p>
 
 <table>
   <thead>
@@ -692,9 +739,9 @@ ranked = await rlm(f"Rank by relevance to {question}:\n{candidates}")</code></pr
 
 <p>Both interventions help — hints slightly edge out playbook, likely because weaker models benefit from copyable SQL templates over abstract principles. But the gains are modest: the base prompt quality and the model's own coding ability remain the primary bottleneck. Procedural memory can transfer patterns, not capability.</p>
 
-<h2>Where the residual decay comes from</h2>
+<h2>Where it still breaks</h2>
 
-<p>If the architecture's goal is unbounded session length without accuracy decay, the question is: why isn't the decay zero? Looking at the 46 failures out of 500 on qwen3.7-max S: multi-session is 25 of those, temporal-reasoning 11, knowledge-update 5 — single-session is a long-solved tail at ≤3 misses per qtype. But the qtype breakdown is the wrong axis. Read the actual failures and a much sharper pattern emerges: <strong>in nearly every miss, the agent already retrieved the right row.</strong> The decay isn't retrieval pressure — it's the agent's procedural code downstream of retrieval. Which means the residual gap is, in principle, closable without changing the substrate.</p>
+<p>Looking at the 64 failures out of 500 on qwen3.6-max-preview S (qwen3.6-plus tracks the same pattern at 63 failures): multi-session is 29 of those, temporal-reasoning and knowledge-update 15 each — single-session is a long-solved tail at ≤3 misses per qtype. But the qtype breakdown is the wrong axis to look at. Read the actual failures and a much sharper pattern emerges: <strong>in nearly every miss, the agent already retrieved the right row</strong>. The error is downstream of retrieval.</p>
 
 <h3>Control-flow miss — stops at first hit instead of sweeping forward</h3>
 
@@ -1011,7 +1058,7 @@ print("Answer: collaboration with influencer that promoted product to 10K follow
 
 <p>None of the five misses above are recall failures. The popular memory-system upgrades — hybrid retrieval (vector + BM25 fusion with weighted scoring), cross-memory entity linking, time-aware ranking — are all <em>retrieval-side</em> improvements. They make top-K better. But our 64 failures don't sit in top-K mistakes; they sit in what the agent <em>does after</em> retrieval lands the right candidate. <strong>A better fusion score wouldn't change the answer on any of the five cases above.</strong></p>
 
-<p>This is the core architectural argument for Scroll. The agent doesn't issue a query and read top-K; the agent <em>writes Python</em>. So the leverage point isn't "how do I rank candidates better" — it's "how do I get the agent to write better procedural code." Three patterns would close most of the remaining gap:</p>
+<p>This is the core architectural argument for CodeMe. The agent doesn't issue a query and read top-K; the agent <em>writes Python</em>. So the leverage point isn't "how do I rank candidates better" — it's "how do I get the agent to write better procedural code." Three patterns would close most of the remaining gap:</p>
 
 <ol>
   <li><strong>Intent-branch on the question first.</strong> "How many years older / how long have I" matches a derivation pattern: find two anchor dates, subtract. Don't search for the answer as a string when the answer doesn't exist as a string.</li>
@@ -1021,7 +1068,7 @@ print("Answer: collaboration with influencer that promoted product to 10K follow
 
 <p>The same observation gives a structural lever too: at ingest time, run a sub-LM extractor that builds a <code>user_state_timeline</code> table of <code>(entity, attribute, value, session_idx, date, polarity)</code> tuples. Then "current role tenure" or "engineers led now" becomes a single ORDER BY DESC LIMIT 1; the procedural patterns above are absorbed into the schema rather than relied on to emerge from the agent each time. Shifting work from agent-runtime to ingest-time is the cleaner play once a query pattern is well-understood.</p>
 
-<p>The retrieval-side upgrades — Mem0-style fusion, entity boost, temporal rank — aren't wrong, they're orthogonal. They help systems whose bottleneck is a single round-trip query against a fixed index. Scroll's bottleneck is the agent's choice of <em>procedure</em>, and you can't fuse your way out of a procedure problem. The fix is either better code (prompt-level intent rules, sub-LM read defaults) or a substrate that pre-computes the joins the agent would otherwise have to write — either way, the leverage sits above retrieval, not inside it.</p>
+<p>The retrieval-side upgrades — Mem0-style fusion, entity boost, temporal rank — aren't wrong, they're orthogonal. They help systems whose bottleneck is a single round-trip query against a fixed index. CodeMe's bottleneck is the agent's choice of <em>procedure</em>, and you can't fuse your way out of a procedure problem. The fix is either better code (prompt-level intent rules, sub-LM read defaults) or a substrate that pre-computes the joins the agent would otherwise have to write — either way, the leverage sits above retrieval, not inside it.</p>
 
 <h2>Why writing Python beats calling tools</h2>
 
@@ -1092,18 +1139,18 @@ except SQLError:
 
 <p>"Agentic memory" today mostly means "an LLM decides what to store and delete behind a fixed API". On this benchmark the honest version of that label is something stronger: <em>the LLM writes the storage and retrieval code itself, including, optionally, the schema</em>. Anything weaker is a more flexible Mem0 — useful, but not exercising what the model can actually do.</p>
 
-<p>None of this rules out vector stores, graphs, or rerankers. Scroll uses SQL, vectors, files, and JSON. The change is that the agent decides when to call each, in what order, with what filters — not the system designer.</p>
+<p>None of this rules out vector stores, graphs, or rerankers. CodeMe uses SQL, vectors, files, and JSON. The change is that the agent decides when to call each, in what order, with what filters — not the system designer.</p>
 
 <p>A useful frame for evaluating the long-term durability of any memory system: <strong>what is it betting the LLM can't do?</strong> MemGPT bet that LLMs couldn't handle tool-call loop control and context paging — that capability shipped in the next model generation, and the abstraction became unnecessary. Systems built around external data structures (Mem0's hybrid index, Zep's knowledge graph, Hindsight's four-network store) are more robust: those abstractions don't live on the LLM vendor's roadmap. Mastra OM bets on prompt caching costs staying low enough to make full-context compression viable at scale.</p>
 
-<p>Scroll's bet runs in the opposite direction: instead of betting on what LLMs <em>can't</em> do, it bets on what they're getting better at — writing code. The structured storage layer (SQL, vectors) is the durable abstraction; the retrieval logic is whatever the model writes today, and it improves as the model does. The only scenario where this breaks down is the Mastra OM end-state: infinite context at negligible cost. The M-split numbers suggest that end-state is still far enough away that an indexed retrieval layer remains worthwhile.</p>
+<p>CodeMe's bet runs in the opposite direction: instead of betting on what LLMs <em>can't</em> do, it bets on what they're getting better at — writing code. The structured storage layer (SQL, vectors) is the durable abstraction; the retrieval logic is whatever the model writes today, and it improves as the model does. The only scenario where this breaks down is the Mastra OM end-state: infinite context at negligible cost. The M-split numbers suggest that end-state is still far enough away that an indexed retrieval layer remains worthwhile.</p>
 
 <hr>
 
 <p class="appendix-header">Appendix</p>
 <h2 style="margin-top: 16px;">One query, eight memory systems</h2>
 
-<p>The taxonomy above is a 30,000-foot view. To make the design differences concrete, this appendix walks a single query through each system. The goal is to show what "the retrieval pipeline" actually means in practice for each — and where Scroll sits.</p>
+<p>The taxonomy above is a 30,000-foot view. To make the design differences concrete, this appendix walks a single query through each system. The goal is to show what "the retrieval pipeline" actually means in practice for each — and where CodeMe sits.</p>
 
 <h3>The scenario</h3>
 
@@ -1165,7 +1212,7 @@ fact_005: "Lisa enjoyed the art book"                    [from S47]</code></pre>
 
 <p>At probe time: vector search over fact embeddings. If <code>fact_004</code> was extracted with the recipient bound — e.g., <em>"User ordered Tōshōdai-ji as a birthday gift for his wife Lisa"</em> — vector retrieval hits it and answers. If the extractor dropped the recipient (a real failure mode: the turn says "I ordered <em>Tōshōdai-ji</em> as a birthday gift", and "for Lisa" is only implicit from S12), then probing for "art book bought for Lisa" misses, and the flat fact list has no way to compose <code>fact_001</code> + <code>fact_004</code> to recover.</p>
 
-<p><strong>Succeeds or fails at ingest, not at probe time.</strong> Mem0's strength relative to Naive RAG is exactly this ingest-side LLM extraction: facts are denser and more searchable than raw turns. Its weakness relative to Hindsight or Scroll is that probe-time reasoning is single-shot vector retrieval over a flat list — no graph traversal, no multi-step composition, no fallback strategy if the first query misses.</p>
+<p><strong>Succeeds or fails at ingest, not at probe time.</strong> Mem0's strength relative to Naive RAG is exactly this ingest-side LLM extraction: facts are denser and more searchable than raw turns. Its weakness relative to Hindsight or CodeMe is that probe-time reasoning is single-shot vector retrieval over a flat list — no graph traversal, no multi-step composition, no fallback strategy if the first query misses.</p>
 
 <h3>4. Zep / Graphiti (knowledge graph)</h3>
 
@@ -1223,9 +1270,9 @@ fact_005: "Lisa enjoyed the art book"                    [from S47]</code></pre>
 
 <p>Each variant runs through vector + BM25. Then an "accumulator" walks sessions sequentially, maintaining running notes. At Session 31 it writes down "<em>Tōshōdai-ji</em>" and carries the note forward. <strong>Succeeds.</strong></p>
 
-<p>Closer to Scroll in spirit (multi-stage, adaptive) but the pipeline is still fixed: same three variants, same accumulator, every probe.</p>
+<p>Closer to CodeMe in spirit (multi-stage, adaptive) but the pipeline is still fixed: same three variants, same accumulator, every probe.</p>
 
-<h3>8. Scroll (CodeAct iterative reasoning)</h3>
+<h3>8. CodeMe (CodeAct iterative reasoning)</h3>
 
 <p>No fixed pipeline. The agent enters a Thought → Code → Observation loop and decides per-turn what to do next.</p>
 
@@ -1276,8 +1323,8 @@ print(context)</code></pre>
 <p><strong>Succeeds.</strong> Four things to notice:</p>
 
 <ol>
-  <li><strong>Reasoning is multi-step.</strong> Other systems are one-shot: retrieve once, read once, answer. Scroll interleaves retrieve → observe → judge → retrieve.</li>
-  <li><strong>Each query is a function of the previous observation.</strong> Turn 2's semantic search exists <em>because</em> Turn 1 returned no "bought" record. Hindsight's four-way retrieval is static and runs identically for every probe; Scroll's query depends on what it just saw.</li>
+  <li><strong>Reasoning is multi-step.</strong> Other systems are one-shot: retrieve once, read once, answer. CodeMe interleaves retrieve → observe → judge → retrieve.</li>
+  <li><strong>Each query is a function of the previous observation.</strong> Turn 2's semantic search exists <em>because</em> Turn 1 returned no "bought" record. Hindsight's four-way retrieval is static and runs identically for every probe; CodeMe's query depends on what it just saw.</li>
   <li><strong>The agent decides when to stop.</strong> After Turn 3 the evidence chain is closed, so the agent answers. If it weren't closed, it would have written Turn 4, Turn 5.</li>
   <li><strong>No write-time commitment to a schema for this probe.</strong> The retrieval logic is materialized at probe time by Python the agent writes; on a different probe the same agent might write very different code.</li>
 </ol>
@@ -1296,13 +1343,13 @@ print(context)</code></pre>
     <tr><td>Hindsight</td><td class="check">Succeed</td><td>Graph spreading activation lifts the evidence; reranker confirms</td><td>Single-shot, multi-channel</td></tr>
     <tr><td>Mastra OM</td><td class="check">Succeed</td><td>LLM reasons jointly over the entire compressed log in context</td><td>No retrieval</td></tr>
     <tr><td>EmergenceMem</td><td class="check">Succeed</td><td>Multi-variant queries + sequential accumulator</td><td>Multi-stage, fixed pipeline</td></tr>
-    <tr><td><strong>Scroll</strong></td><td class="check">Succeed</td><td>Iterative CodeAct loop adapts to what it observes</td><td>Iterative, agent-written</td></tr>
+    <tr><td><strong>CodeMe</strong></td><td class="check">Succeed</td><td>Iterative CodeAct loop adapts to what it observes</td><td>Iterative, agent-written</td></tr>
   </tbody>
 </table>
 
-<p>The point of this walk-through isn't that Scroll is the only system that solves this probe — Hindsight and Mastra OM also get it. The point is the <em>shape</em> of how each system gets there. Six of the eight have a single retrieval moment that either works or doesn't. Scroll is the only one where retrieval is a small program the agent writes for this specific question, on this specific day, with this specific log.</p>
+<p>The point of this walk-through isn't that CodeMe is the only system that solves this probe — Hindsight and Mastra OM also get it. The point is the <em>shape</em> of how each system gets there. Six of the eight have a single retrieval moment that either works or doesn't. CodeMe is the only one where retrieval is a small program the agent writes for this specific question, on this specific day, with this specific log.</p>
 
-<p>That shape is what scales to the M split. Mastra OM's "read the whole compressed log" stops working when the compressed log itself exceeds 200K tokens. Hindsight's four-way pipeline still works but its noise grows with the haystack — every channel returns more candidates, the reranker has to discriminate harder. Scroll's loop is invariant to haystack size because the model never reads the haystack — it reads the rows that came back from a query.</p>
+<p>That shape is what scales to the M split. Mastra OM's "read the whole compressed log" stops working when the compressed log itself exceeds 200K tokens. Hindsight's four-way pipeline still works but its noise grows with the haystack — every channel returns more candidates, the reranker has to discriminate harder. CodeMe's loop is invariant to haystack size because the model never reads the haystack — it reads the rows that came back from a query.</p>
 
 </div>
 </body>

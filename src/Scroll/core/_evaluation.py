@@ -186,15 +186,10 @@ def inject_probe(
                 f"reporting window):\n{outcomes_lines}\n\n"
             )
 
-        # Probe-mode rules (plain-text reply, no wait_for_next_day, no
-        # print-wrapped answers, REPL semantics) live in the universal
-        # PROBE_SUBSTRATE_PROMPT, plus a per-env "PROBE FORMAT" block
-        # supplied by ``BaseEnvironment.probe_substrate_prompt`` (e.g.
-        # vending's deterministic-regex format vs. LME's lenient
-        # judge format) — both are spliced into the system prompt by
-        # ``CodeActAgent._probe_sys_prompt``. The env can also append
-        # a short, scorer-shaped reminder NEXT TO the question text
-        # via ``probe_user_postscript`` — picked up here.
+        # Per-env probe-format reminders ride on the user-message
+        # postscript (``BaseEnvironment.probe_user_postscript``) so
+        # they sit RIGHT NEXT TO the question text where the model's
+        # instruction-following attention is highest.
         env = (
             getattr(agent, "_tool_state", None)
             and agent._tool_state.env
