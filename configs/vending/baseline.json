@@ -12,7 +12,7 @@
     "judge_api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"
   },
   "agent": {
-    "policy": "scroll",
+    "policy": "baseline",
     "qwen_model_name": "qwen3.7-max",
     "qwen_api_key_env": "CN_DASHSCOPE_API_KEY",
     "qwen_api_base_env": "CN_DASHSCOPE_BASE_URL",

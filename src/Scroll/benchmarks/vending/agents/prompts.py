@@ -178,6 +178,14 @@ is an accepted alias).
       storage_qty  INTEGER,
       price        REAL,
       PRIMARY KEY (day, sku))
+      One row per (day, SKU) for EVERY SKU in the catalog, including
+      ones that have never been stocked. A row with
+      ``machine_qty=0 AND storage_qty=0`` does NOT by itself mean a
+      stockout — it may just be a SKU you never carried. Real
+      stockout EVENTS (a previously-stocked SKU depleting to zero)
+      are emitted as ``stockout sku=X`` log lines; recover them via
+      ``log.search("stockout sku=")`` or
+      ``log.findall(r"stockout sku=(\\w+)", log.slice(kind="env_log"))``.
 
   supplier_prices(supplier, sku, price)
       Latest known wholesale price per supplier (from "Re: Price List"

@@ -459,6 +459,249 @@ def _gt_a16(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Extended coverage probes — fill medium/long/late-horizon gaps and
+# introduce new question shapes (volatility/spread, abandoned SKUs,
+# price-change detection, fee totals).
+# ---------------------------------------------------------------------------
+
+_CATALOG_SKUS = frozenset({"cola", "water", "chips", "choco", "energy", "gum", "juice", "nuts"})
+
+
+def _daily_revenue(snapshots: list[EnvSnapshot], lo: int, hi: int) -> dict[int, float]:
+    out: dict[int, float] = {}
+    for s in snapshots:
+        if not (lo <= s.day <= hi):
+            continue
+        rev = 0.0
+        for log in s.logs:
+            m = re.search(r"rev=([\d.]+)", log)
+            if m:
+                rev += float(m.group(1))
+        out[s.day] = rev
+    return out
+
+
+def _sold_skus(snapshots: list[EnvSnapshot], lo: int, hi: int) -> set[str]:
+    sold: set[str] = set()
+    for s in snapshots:
+        if not (lo <= s.day <= hi):
+            continue
+        for log in s.logs:
+            if not log.startswith("sale"):
+                continue
+            m = re.search(r"sku=(\w+)", log)
+            if m:
+                sold.add(m.group(1))
+    return sold
+
+
+def _sku_revenue(snapshots: list[EnvSnapshot], lo: int, hi: int) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for s in snapshots:
+        if not (lo <= s.day <= hi):
+            continue
+        for log in s.logs:
+            if not log.startswith("sale"):
+                continue
+            m_sku = re.search(r"sku=(\w+)", log)
+            m_rev = re.search(r"rev=([\d.]+)", log)
+            if m_sku and m_rev:
+                out[m_sku.group(1)] = out.get(m_sku.group(1), 0.0) + float(m_rev.group(1))
+    return out
+
+
+def _gt_a17(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    total = sum(s.units_sold for s in snapshots if s.day <= 30)
+    return f"{total} units"
+
+
+def _gt_a18(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    for s in snapshots:
+        if s.day == 35 and s.inventory:
+            cola = s.inventory.get("cola", {})
+            return f"storage={cola.get('storage', 0)}"
+    return "unknown"
+
+
+def _gt_b14(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    day_rev = _daily_revenue(snapshots, 21, 40)
+    if not day_rev:
+        return "no data"
+    spread = max(day_rev.values()) - min(day_rev.values())
+    return f"${spread:.2f}"
+
+
+def _gt_b15(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    sold = _sold_skus(snapshots, 16, 45)
+    unsold = sorted(_CATALOG_SKUS - sold)
+    if not unsold:
+        return "none"
+    return ", ".join(unsold)
+
+
+def _gt_a19(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    count = sum(1 for m in data.inbox if m.day <= 50)
+    return f"{count} emails"
+
+
+def _gt_b16(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    prev: float | None = None
+    for s in snapshots:
+        if s.day > 70:
+            break
+        if not s.inventory:
+            continue
+        price = s.inventory.get("cola", {}).get("price")
+        if price is None:
+            continue
+        if prev is not None and abs(price - prev) > 0.01:
+            return f"day {s.day}"
+        prev = price
+    return "never"
+
+
+def _gt_a20(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    total = 0.0
+    for s in snapshots:
+        if not (31 <= s.day <= 60):
+            continue
+        for log in s.logs:
+            if "delivery_arrived" in log:
+                m = re.search(r"(?:booked_cost|cost)=([\d.]+)", log)
+                if m:
+                    total += float(m.group(1))
+    return f"${total:.2f}"
+
+
+def _gt_b17(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    day_rev = _daily_revenue(snapshots, 61, 85)
+    if not day_rev:
+        return "no data"
+    spread = max(day_rev.values()) - min(day_rev.values())
+    return f"${spread:.2f}"
+
+
+def _gt_a21(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    day_rev = _daily_revenue(snapshots, 1, 95)
+    count = sum(1 for rev in day_rev.values() if rev > 50)
+    return f"{count} days"
+
+
+def _gt_b18(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    sku_so: dict[str, int] = {}
+    for s in snapshots:
+        if s.day > 100:
+            continue
+        for log in s.logs:
+            if log.startswith("stockout"):
+                m = re.search(r"sku=(\w+)", log)
+                if m:
+                    sku_so[m.group(1)] = sku_so.get(m.group(1), 0) + 1
+    if not sku_so:
+        return "no stockouts"
+    top = _all_argmax(sku_so)
+    if len(top) == 1:
+        return top[0]
+    return ", ".join(top)
+
+
+def _gt_a22(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    for s in snapshots:
+        if s.day == 90:
+            return f"${s.net_worth:.2f}"
+    return "unknown"
+
+
+def _gt_b19(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    sold = _sold_skus(snapshots, 86, 115)
+    unsold = sorted(_CATALOG_SKUS - sold)
+    if not unsold:
+        return "none"
+    return ", ".join(unsold)
+
+
+def _gt_a23(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    return f"${_sum_revenue(snapshots, 61, 120):.2f}"
+
+
+def _gt_a24(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    for s in snapshots:
+        if s.day == 120:
+            return f"${s.net_worth:.2f}"
+    return "unknown"
+
+
+def _gt_a25(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    total = sum(s.units_sold for s in snapshots if s.day <= 120)
+    return f"{total} units"
+
+
+def _gt_b20(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    first = _sum_revenue(snapshots, 91, 120) / 30
+    second = _sum_revenue(snapshots, 121, 150) / 30
+    if first >= second:
+        return "91-120"
+    return "121-150"
+
+
+def _gt_a26(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    total = 0.0
+    for s in snapshots:
+        if s.day > 150:
+            continue
+        for log in s.logs:
+            if "delivery_arrived" in log:
+                m = re.search(r"(?:booked_cost|cost)=([\d.]+)", log)
+                if m:
+                    total += float(m.group(1))
+    return f"${total:.2f}"
+
+
+def _gt_b21(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    sku_rev = _sku_revenue(snapshots, 121, 150)
+    if not sku_rev:
+        return "no sales"
+    top = _all_argmax(sku_rev)
+    if len(top) == 1:
+        return top[0]
+    return ", ".join(top)
+
+
+def _gt_a27(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    total = 0.0
+    for s in snapshots:
+        if s.day > 170:
+            continue
+        for log in s.logs:
+            if log.startswith("fee_charged"):
+                m = re.search(r"fee_charged\s+([\d.]+)", log)
+                if m:
+                    total += float(m.group(1))
+    return f"${total:.2f}"
+
+
+def _gt_b22(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    day_rev = _daily_revenue(snapshots, 141, 170)
+    if len(day_rev) < 2:
+        return "insufficient data"
+    days = sorted(day_rev.keys())
+    max_jump = max(
+        abs(day_rev[days[i + 1]] - day_rev[days[i]]) for i in range(len(days) - 1)
+    )
+    return f"${max_jump:.2f}"
+
+
+def _gt_b23(snapshots: list[EnvSnapshot], data: DataSourceManager) -> str:
+    sku_rev = _sku_revenue(snapshots, 1, 178)
+    if not sku_rev:
+        return "no sales"
+    top = _all_argmax(sku_rev)
+    if len(top) == 1:
+        return top[0]
+    return ", ".join(top)
+
+
+# ---------------------------------------------------------------------------
 # LLM judge
 # ---------------------------------------------------------------------------
 
@@ -640,24 +883,45 @@ _PROBE_META: list[tuple] = [
     ("B4", 26, "For products carried by multiple suppliers, which supplier is cheaper?", _gt_b4),
     ("B5", 14, "What is your total sales revenue so far, and what percentage of that revenue came from your single top-revenue SKU? If multiple SKUs are tied for top revenue, list each with the same shared percentage.", _gt_b5),
     ("B6", 24, "What is your approximate profit margin on cola (selling price minus wholesale cost, as a percentage of selling price)?", _gt_b6),
-    # Medium phase (days 35-60)
+    # Medium phase (days 30-55)
+    ("A17", 32, "What was your cumulative units sold from day 1 through day 30?", _gt_a17),
     ("A8", 35, "What was your total sales revenue for days 21 through 30?", _gt_a8),
+    ("A18", 38, "At end of day 35 (after that day's sales executed), how many units of cola were in storage?", _gt_a18),
     ("A9", 40, "How many delivery shipments have arrived so far (count one shipment per `delivery_arrived` event in the env logs, regardless of how many SKUs were inside)?", _gt_a9),
+    ("B14", 42, "What was the revenue spread across days 21 through 40 — the highest single-day total revenue minus the lowest single-day total revenue in that window?", _gt_b14),
     ("B7", 45, "Comparing days 1-15 vs days 16-30, which period had higher average daily revenue? Answer with the period range only — exactly `1-15` or `16-30`.", _gt_b7),
+    ("B15", 48, "Which SKUs in your catalog had ZERO sales during days 16 through 45? List every such SKU (comma-separated), or answer `none` if every SKU sold at least one unit in that window.", _gt_b15),
     ("A10", 50, "What was your net worth on day 30?", _gt_a10),
+    ("A19", 52, "How many emails were in your inbox at end of day 50? Count every received email regardless of read status.", _gt_a19),
     ("B8", 55, "Which SKU has contributed the most cumulative profit so far, where profit per unit = selling revenue minus the CHEAPEST available wholesale price for that SKU across all known suppliers? If multiple SKUs are tied for top profit, list every one of them.", _gt_b8),
     # Long phase (days 65-120)
     ("A11", 65, "How many units of water were in the machine and in storage on day 30?", _gt_a11),
+    ("B16", 70, "On which day did the selling price of cola first change from its initial value? Answer with the day number (e.g. `day 17`), or `never` if the price has not changed.", _gt_b16),
     ("B9", 75, "Over the past 30 days (days 46-75), what was the average daily units sold?", _gt_b9),
+    ("A20", 80, "What was the total delivery cost (sum of `booked_cost` across all `delivery_arrived` events) for days 31 through 60?", _gt_a20),
+    ("B17", 85, "Across days 61 through 85, what was the revenue spread — the highest single-day total revenue minus the lowest single-day total revenue?", _gt_b17),
     ("A12", 90, "What was your cumulative sales revenue across days 1 through 60?", _gt_a12),
+    ("A21", 95, "How many days so far (days 1-95) generated more than $50 in total sales revenue?", _gt_a21),
     ("B10", 100, "How many distinct SKUs have you stocked in the vending machine at any point so far?", _gt_b10),
+    ("B18", 105, "Which SKU has had the most stockout events from day 1 through day 100? If multiple SKUs are tied at the same number of stockouts, list every one of them.", _gt_b18),
+    ("A22", 108, "What was your net worth at end of day 90?", _gt_a22),
     ("A13", 110, "How many full-depletion stockout events have occurred in the last 30 days (days 81-110)? Count one event per (day, SKU) pair where the SKU had zero units in BOTH the vending machine AND storage at end of day, and only count SKUs that have been stocked at some point.", _gt_a13),
+    ("B19", 115, "Which SKUs in your catalog had ZERO sales over the past 30 days (days 86 through 115)? List every such SKU (comma-separated), or answer `none` if every SKU sold at least one unit.", _gt_b19),
     ("B11", 120, "Over the past 30 days (days 91-120), is your net worth trending up, down, or flat? Answer with one word: `up`, `down`, or `flat` (treat changes within ±5% of the starting net worth as flat).", _gt_b11),
+    ("A23", 122, "What was your cumulative sales revenue across days 61 through 120?", _gt_a23),
     # Full-horizon phase (days 130-180)
     ("A14", 130, "What was your net worth on day 60?", _gt_a14),
+    ("A24", 135, "What was your net worth at end of day 120?", _gt_a24),
+    ("A25", 140, "What was your cumulative units sold from day 1 through day 120?", _gt_a25),
     ("B12", 145, "Which supplier have you placed the most orders with so far, counted by the number of `Order confirmation` emails received from each supplier (NOT by price inquiries, replies, or rejection emails)? If multiple suppliers are tied, list every one of them.", _gt_b12),
+    ("B20", 150, "Comparing days 91-120 vs days 121-150, which window had higher average daily revenue? Answer with the period range only — exactly `91-120` or `121-150`.", _gt_b20),
+    ("A26", 155, "What was your total delivery cost (sum of `booked_cost` across all `delivery_arrived` events) from day 1 through day 150?", _gt_a26),
     ("A15", 160, "Which day so far had the highest sales revenue, and what was that revenue? If multiple days are tied at the same peak revenue, list every one of them.", _gt_a15),
+    ("B21", 165, "Which SKU generated the most cumulative sales revenue across days 121 through 150? If multiple SKUs are tied at the same total, list every one of them.", _gt_b21),
+    ("A27", 170, "What was the cumulative daily operating fee charged from day 1 through day 170 (sum the `fee_charged` amount each day)?", _gt_a27),
+    ("B22", 172, "Across days 141 through 170, what was the largest absolute change in total daily revenue between any two consecutive days?", _gt_b22),
     ("B13", 175, "Comparing the first 30 days (days 1-30) and the most recent 30 days (days 146-175), has average daily revenue gone up, down, or stayed flat? Answer with one word: `up`, `down`, or `flat` (treat changes within ±5% of the early average as flat).", _gt_b13),
+    ("B23", 178, "Which SKU has generated the most cumulative sales revenue across days 1 through 178? If multiple SKUs are tied at the same total, list every one of them.", _gt_b23),
     ("A16", 180, "What was your total delivery spend across the first 90 days?", _gt_a16),
 ]
 
