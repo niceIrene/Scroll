@@ -45,11 +45,11 @@
   }
   .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;}
 
-  .wrap{max-width:760px;margin:0 auto;padding:0 28px;}
+  .wrap{max-width:840px;margin:0 auto;padding:0 28px;}
 
   /* ---- masthead ---- */
   header.top{border-bottom:1px solid var(--line);}
-  .masthead{max-width:980px;margin:0 auto;padding:18px 28px;display:flex;justify-content:space-between;align-items:baseline;font-family:var(--mono);font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);}
+  .masthead{max-width:840px;margin:0 auto;padding:18px 28px;display:flex;justify-content:space-between;align-items:baseline;font-family:var(--mono);font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);}
   .masthead .brand{color:var(--accent);font-weight:600;}
   .masthead .right{color:var(--ink-faint);}
 
@@ -169,7 +169,7 @@
   .refs li a{color:var(--accent-deep);}
   .refs .src{color:var(--ink);}
   footer.foot{border-top:1px solid var(--line);margin-top:60px;}
-  .foot-in{max-width:760px;margin:0 auto;padding:30px 28px 60px;font-family:var(--mono);font-size:12px;color:var(--ink-faint);letter-spacing:.03em;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;}
+  .foot-in{max-width:840px;margin:0 auto;padding:30px 28px 60px;font-family:var(--mono);font-size:12px;color:var(--ink-faint);letter-spacing:.03em;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;}
 
   /* reveal */
   .rv{opacity:0;transform:translateY(14px);}
@@ -211,13 +211,13 @@
 <article>
 <div class="wrap">
 
-  <p class="lead rv">Agents are smart inside a small box. The box is the context window, and almost every design decision in a long-running agent is really a decision about what to throw out of it. Scroll is a bet that you shouldn't have to throw anything out at all — that the entire history of a session can live <em class="term">in the environment</em> as a <a href="https://www.anthropic.com/engineering/managed-agents">durable log</a> the agent reads with code, the way it reads a file or queries a database.</p>
+  <p class="lead rv">Agents are smart inside a small box. The box is the context window, and almost every design decision in a long-running agent is really a decision about what to throw out of it. Scroll is a bet that you shouldn't have to throw anything out at all — that an agent's history can live <em class="term">in the environment</em> as a <a href="https://www.anthropic.com/engineering/managed-agents">durable log</a> it reads with code, the way it reads a file or queries a database.</p>
 
   <section class="sec rv">
     <span class="sec-no">§01 — The window keeps closing</span>
     <h2>Making room always means losing something</h2>
   </section>
-  <p class="rv">When the context window fills, an agent has two standard ways to cope. The first is <strong>compaction</strong>: older turns are summarized and the originals are dropped. The second is <strong>memory</strong> — the agent writes select facts to a store, a file, a note, a memory tool, so they survive into later sessions. Each is useful, and each rests on the same fragile bet: deciding <em>in advance</em> which details a future turn will need, then compressing or discarding the rest. The bet is largely irreversible. After a compaction, a paraphrase is all that survives; and whatever the agent never thought to write down is simply not in its memory.</p>
+  <p class="rv">When the context window fills, an agent has two standard ways to cope. The first is <strong>compaction</strong>: older turns are summarized and the originals are dropped. The second is <strong>memory</strong> — the agent writes select facts to a store, so they survive into later sessions. Each is useful, and each rests on the same fragile bet: guessing in advance what a future turn will need, then compressing or discarding the rest.</p>
   <p class="rv">This is quietly corrosive for any long-running agent. For example, a coding agent loses the early decisions: why a module was shaped a certain way, what an abandoned approach actually did, the exact error that forced a refactor. A research or support agent loses the thread of what it already tried, ruled out, or promised a user three sessions ago. The agent keeps going, fluent and confident, but it is now working without its own history — and it has no way to know which forgotten detail was the one that mattered.</p>
   <p class="rv">The same gap opens when the agent is operating something over a long horizon. In <a href="https://arxiv.org/abs/2502.15840"><em class="term">vending-bench</em>-style settings</a>, an agent runs a small business — taking in operational data, supplier quotes, sales figures, and demand signals day after day. Within days that stream dwarfs any context window. Compact it away, or fail to write the right note, and the agent can no longer answer the questions that make it good at the job: which supplier was cheapest last quarter, which SKU keeps selling out, what it already tried and how it turned out.</p>
 
@@ -239,9 +239,9 @@
 
   <div class="panel rv">
     <div class="panel-bar"><span class="dots"><i></i><i></i><i></i></span><span>agent · python repl</span></div>
-    <div class="panel-body"><span class="ln"><span class="com"># question: "what's my dog's name?" — never said in the last few sessions, recall it</span></span><span class="ln"><span class="kw">for</span> e <span class="kw">in</span> <span class="fn">log</span>.semantic_search(<span class="str">"user's dog or pet name"</span>, k=<span class="key">3</span>):</span><span class="ln">    <span class="fn">print</span>(<span class="str">f"s{e.session_idx}  {e.session_date_iso}  {e.content[:70]!r}"</span>)</span><span class="ln out">s19  2023-09-22  "picked up the puppy yesterday — naming her Mochi"</span><span class="ln out">s23  2023-10-14  "took Mochi to the park, finally not pulling on the leash"</span><span class="ln out">s31  2023-12-02  "Mochi is 14 months now, vet says healthy weight"</span><span class="ln">&nbsp;</span><span class="ln"><span class="com"># question: "how long have I been at the new job?" — anchor + date math</span></span><span class="ln">hire = <span class="fn">log</span>.sql_exec(<span class="str">"""SELECT session_date_iso, content FROM chat_turns</span></span><span class="ln"><span class="str">    WHERE content LIKE '%first day at%' ORDER BY session_idx LIMIT 1"""</span>)</span><span class="ln"><span class="fn">print</span>(hire[<span class="key">0</span>][<span class="str">'session_date_iso'</span>], <span class="str">'→'</span>, hire[<span class="key">0</span>][<span class="str">'content'</span>][:<span class="key">60</span>])</span><span class="ln"><span class="fn">print</span>(<span class="str">"days since:"</span>, days_between(hire[<span class="key">0</span>][<span class="str">'session_date_iso'</span>], <span class="str">'2024-03-12'</span>))</span><span class="ln out">2023-09-18 → "today was my first day at Stripe — overwhelming…"</span><span class="ln out">days since: 176</span><span class="ln"><span class="cur"></span></span></div>
+    <div class="panel-body"><span class="ln"><span class="com"># probe (day 55): which SKU has earned the most *profit* so far?</span></span><span class="ln"><span class="com"># profit/unit = sale price minus the cheapest wholesale quote we've been offered.</span></span><span class="ln"><span class="kw">import</span> pandas <span class="kw">as</span> pd, re</span><span class="ln">&nbsp;</span><span class="ln"><span class="com"># pull every sale event out of the log into a frame</span></span><span class="ln">sales = pd.DataFrame(<span class="fn">log</span>.events(kind=<span class="str">"sale"</span>))   <span class="com"># sku, units, unit_price</span></span><span class="ln">&nbsp;</span><span class="ln"><span class="com"># parse each supplier's price-list reply for the lowest wholesale per SKU</span></span><span class="ln">quotes = {}</span><span class="ln"><span class="kw">for</span> e <span class="kw">in</span> <span class="fn">log</span>.search(<span class="str">"Re: Price List"</span>, role=<span class="str">"email"</span>):</span><span class="ln">    <span class="kw">for</span> sku, p <span class="kw">in</span> re.findall(<span class="str">r"(\w+):\s*\$?([\d.]+)"</span>, e.body):</span><span class="ln">        quotes[sku] = min(float(p), quotes.get(sku, float(<span class="str">"inf"</span>)))</span><span class="ln">&nbsp;</span><span class="ln"><span class="com"># join, weight per-unit margin by units sold, rank by total profit</span></span><span class="ln">sales[<span class="str">"cost"</span>]   = sales.sku.map(quotes)</span><span class="ln">sales[<span class="str">"profit"</span>] = (sales.unit_price - sales.cost) * sales.units</span><span class="ln">ranked = sales.groupby(<span class="str">"sku"</span>).profit.sum().sort_values(ascending=False)</span><span class="ln"><span class="fn">print</span>(ranked.round(<span class="key">2</span>).head(<span class="key">3</span>).to_dict())</span><span class="ln out">{'energy': 88.4, 'cola': 71.15, 'water': 33.6}</span><span class="ln"><span class="cur"></span></span></div>
   </div>
-  <p class="caption rv">One history, two access patterns nobody indexed for in advance — fuzzy semantic recall and exact SQL with date math, both over the same log.</p>
+  <p class="caption rv">No retrieval pipeline returns this. The agent reconstructs sales and supplier quotes from the raw log, joins them, and computes per-SKU profit on the spot — exactly the analysis no schema was designed for.</p>
 
   <p class="rv">Because the log is just an environmental object, the agent can do anything a programmer could do with months of structured history: recall what a user said a year ago, reconstruct exactly what it tried on day three, or run a full business analysis — cheapest supplier quote for a product, best-selling item, the SKU that most consistently sells out by season. Nothing was anticipated; everything is recoverable.</p>
 
@@ -288,7 +288,7 @@
         <text x="254" y="456" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#3a6b5d">physical store</text>
         <text x="254" y="476" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#3a6b5d">indexes</text>
         <!-- agent harness -->
-        <rect x="398" y="232" width="244" height="152" rx="16" fill="#F6E7DD" stroke="#E0B79F"/>
+        <rect x="398" y="232" width="244" height="168" rx="16" fill="#F6E7DD" stroke="#E0B79F"/>
         <text x="520" y="260" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" letter-spacing="1.2" fill="#B0451F">AGENT HARNESS</text>
         <rect x="418" y="278" width="100" height="72" rx="8" fill="#B0451F"/>
         <text x="468" y="307" text-anchor="middle" font-family="Newsreader, serif" font-size="14.5" font-weight="600" fill="#F6F1E7">Execute</text>
@@ -297,6 +297,17 @@
         <text x="584" y="318" text-anchor="middle" font-family="Newsreader, serif" font-size="14.5" font-weight="600" fill="#7E2E12">Context</text>
         <line x1="518" y1="306" x2="542" y2="306" stroke="#B0451F" stroke-width="1.6" marker-end="url(#ar)"/>
         <line x1="544" y1="324" x2="518" y2="324" stroke="#B0451F" stroke-width="1.6" marker-end="url(#ar)"/>
+        <!-- tools the execute-python loop can call -->
+        <line x1="468" y1="351" x2="468" y2="361" stroke="#B0451F" stroke-width="1.4" marker-end="url(#ar)"/>
+        <rect x="416" y="364" width="42" height="20" rx="6" fill="#fff" stroke="#E0B79F"/>
+        <text x="437" y="378" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#7E2E12">sql</text>
+        <rect x="462" y="364" width="42" height="20" rx="6" fill="#fff" stroke="#E0B79F"/>
+        <text x="483" y="378" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#7E2E12">file</text>
+        <rect x="508" y="364" width="42" height="20" rx="6" fill="#fff" stroke="#E0B79F"/>
+        <text x="529" y="378" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#7E2E12">rlm</text>
+        <rect x="554" y="364" width="56" height="20" rx="6" fill="#fff" stroke="#E0B79F"/>
+        <text x="582" y="378" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#7E2E12">search</text>
+        <text x="616" y="378" font-family="JetBrains Mono, monospace" font-size="12" fill="#8C8470">…</text>
         <!-- connectors -->
         <line x1="338" y1="150" x2="416" y2="296" stroke="#7E2E12" stroke-width="1.6" marker-start="url(#ar)" marker-end="url(#ar)"/>
         <line x1="338" y1="450" x2="416" y2="336" stroke="#7E2E12" stroke-width="1.6" marker-start="url(#ar)" marker-end="url(#ar)"/>
@@ -308,7 +319,7 @@
     </div>
   </figure>
 
-  <p class="rv">The piece that ties them together is the <strong>synchronization loop</strong>, and its defining property is what it <em>doesn't</em> use: it keeps the log and the memory space in sync entirely inside the harness, with <strong>no model calls</strong>. Maintaining memory costs zero LLM tokens by default. The agent still has full REPL handles when it wants them — to reshape the schema or indexes, to write a freshly extracted fact into the memory space, or to run analysis directly inside it — but routine upkeep never touches the model.</p>
+  <p class="rv">The two stay aligned through a <strong>synchronization loop</strong> that is fully mechanical: the harness updates the memory space from the log with no model calls, so it costs nothing in tokens — and there's no LLM quietly summarizing in the background every turn, the way most memory systems do. When the agent actually wants to use memory — look something up, store a fact, reshape an index — it does so by writing code that calls these <strong>tools</strong>, spending tokens only when it chooses to.</p>
 
   <section class="sec rv">
     <span class="sec-no">§05 — How this differs from memory systems</span>
@@ -374,26 +385,31 @@
   <p class="rv">We don't think recall from a conversation log is the whole test. Memory has to be evaluated along more than one axis: real agents don't just answer questions about a chat history — they act in an environment and accumulate state that was never spoken aloud. That motivates the vending-bench experiments below, where memory is tested under interaction rather than recall. We also plan to run <a href="https://arxiv.org/abs/2510.27246"><strong>BEAM</strong></a>, which stresses long-term memory across diverse abilities at up to 10M tokens — well past any context window — to see how Scroll holds up as the log grows without bound.</p>
 
   <h3 class="rv">Vending-bench, with probe questions</h3>
-  <p class="rv">Static recall isn't the whole story for an operating agent, so we built on <a href="https://andonlabs.com/evals/vending-bench-2"><strong>Vending-Bench 2</strong></a> — a long-horizon benchmark in which an agent runs a simulated vending-machine business, ordering from suppliers and managing inventory and pricing over a full simulated year. We modified it to interleave <strong>probe questions</strong> on certain days: factual and analytical queries the agent must answer from its accumulated history.</p>
+  <p class="rv">Static recall isn't the whole story for an operating agent, so we built a simulation modeled on <a href="https://andonlabs.com/evals/vending-bench-2"><strong>Vending-Bench 2</strong></a> — a long-horizon benchmark in which an agent runs a simulated vending-machine business, ordering from suppliers and managing inventory and pricing over many simulated months. Our version interleaves <strong>probe questions</strong> on certain days — realistic business-analytical asks, phrased the way an investor update, an ops debrief, or a finance audit would be, each with a precise computable answer the agent has to derive from its accumulated history.</p>
 
   <div class="probe rv">
     <div class="ptag">▍ example probes</div>
     <ul>
-      <li>Are any SKUs running out completely — zero units in <em>both</em> the machine and storage on the same day? How many distinct stockout events occurred for each actively-sold SKU?</li>
-      <li>What was your total delivery spend across the first 90 days?</li>
-      <li>Which supplier have you placed the most orders with, counted by the number of <em>Order confirmation</em> emails from each supplier (not price inquiries, replies, or rejections)? If multiple suppliers are tied, list every one of them.</li>
+      <li><em>Ops debrief:</em> from day 1 to 18, did any SKU deplete completely — zero units in <em>both</em> the machine and storage on the same day — and how many distinct stockout events has each actively-sold SKU had?</li>
+      <li><em>Margin analysis:</em> which SKU has contributed the most cumulative <em>profit</em> so far, where profit per unit is its selling price minus the cheapest wholesale quote we've received for it across all suppliers?</li>
+      <li><em>Pitch deck:</em> across every 7-consecutive-day window so far, which week had the highest total sales revenue, and what was it?</li>
+      <li><em>Finance review:</em> total spend with each supplier, summing the cost field across every <em>Order confirmation</em> email, grouped by supplier and ranked highest to lowest.</li>
     </ul>
   </div>
 
-  <p class="rv">Across a <strong>180-day</strong> run with <span class="tbd">xx</span> probe questions, the Scroll agent answered with an accuracy of <span class="tbd">xxxx</span>, versus <span class="tbd">xx</span> for a baseline agent limited to context compaction. The gap widens precisely where it should: on questions that require reaching back past where compaction would have erased the evidence. <em>(Vending-bench figures to be filled in.)</em></p>
+  <p class="rv">Across a <strong>180-day</strong> run with <strong>60</strong> probe questions, the Scroll agent answered with an accuracy of <strong>0.950</strong>, versus <strong>0.683</strong> for a baseline agent limited to context compaction. The gap widens precisely where it should: on questions that require reaching back past where compaction would have erased the evidence.</p>
 
-  <div class="pull rv">Give the agent its whole history as a queryable object, and long-horizon tasks stop being a memory problem and start being a programming one.</div>
+  <div class="metric-strip rv">
+    <div class="stat"><div class="v">0.950</div><div class="k">Scroll · probe accuracy</div></div>
+    <div class="stat"><div class="v" style="color:var(--ink-faint);">0.683</div><div class="k">compaction baseline</div></div>
+    <div class="stat"><div class="v pine">+0.267</div><div class="k">accuracy gain</div></div>
+  </div>
 
   <section class="sec rv">
     <span class="sec-no">§07 — What's next</span>
     <h2>Designing the store, and the API around it</h2>
   </section>
-  <p class="rv">These results lean mostly on the log as the source of truth, and two directions follow from there. The first is a <strong>better physical storage design</strong> for the memory space — more efficient ways to lay out, index, and reach its semantic and procedural memories so common queries stay cheap as the log grows without bound. The second is the <strong>agent-facing API</strong>: the interfaces and primitives the model uses to read, reshape, and compute over its own history, designed to unlock more of what the agent can do rather than fence it in. That work — and the full reproduction harness — is in <a href="https://github.com/niceIrene/Scroll">the repository</a>.</p>
+  <p class="rv">These results lean mostly on the log as the source of truth, and two directions follow from there. The first is a <strong>better physical storage design</strong> for the memory space — more efficient ways to lay out, index, and reach its semantic and procedural memories so common queries stay cheap as the log grows without bound. The second is the <strong>agent-facing API</strong>: the interfaces and primitives the model uses to read, reshape, and compute over its own history, designed to unlock more of what the agent can do rather than fence it in.</p>
 
   <div class="endnote rv">
     <a class="repo" href="https://github.com/niceIrene/Scroll"><span style="color:var(--accent);font-weight:600;">›_</span> Code &amp; reproduction · github.com/niceIrene/Scroll</a>

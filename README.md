@@ -8,9 +8,9 @@ Three benchmarks ship with the framework: **LongMemEval** (chat-memory probes), 
 
 See [`docs/scroll.md`](docs/scroll.md) for the design rationale and the (E, W, CodeAct) decomposition.
 
-## Headline result
+## Headline results
 
-**LongMemEval `_s` split, 500 QA (incl. abstention twins):**
+### LongMemEval `_s` split, 500 QA (incl. abstention twins)
 
 | Agent model | Overall | k-update | multi-sess | s-asst | s-pref | s-user | temporal |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -20,6 +20,19 @@ See [`docs/scroll.md`](docs/scroll.md) for the design rationale and the (E, W, C
 SCROLL framework (E + W + CodeAct) + qwen3.7-max judge. Configs: [`scroll_qwen37max.json`](configs/longmemeval/scroll_qwen37max.json), [`scroll_deepseek.json`](configs/longmemeval/scroll_deepseek.json).
 
 The same scaffold (prompts, retrieval primitives, REPL substrate) runs across both models — only the agent model name changes in the config. Deepseek-v4-pro wins on TR (+3.8pp) and multi-session (+2.3pp) at the cost of ~3× wall time (75s/QA vs 24s/QA); qwen3.7-max wins on KU (+2.6pp) and assistant (+3.6pp) at lower latency.
+
+### Vending Machine, 180-day run, seed=1
+
+Same agent model, same 180-day horizon, same 60-probe suite. Only difference: memory strategy.
+
+| Agent | probe_score | net_worth | units_sold | active turns | bankrupt |
+|---|---:|---:|---:|---:|---:|
+| **scroll · qwen3.7-max** | **0.950** | $1,105.25 | 855 | 73 | False |
+| baseline · qwen3.7-max | 0.683 | $2,563.15 | 2,096 | 175 | False |
+
+The 60-question probe suite is phrased as realistic stakeholder asks — point-in-time recall, weekly/monthly trends, aggregations, supplier/inventory queries, top-K / abandoned-SKU / price-change detection. SCROLL routes off-context reads through `ms.sql_exec` over the persisted event log `E` (precise historical values); the baseline relies on a rolling LLM summary which smooths out fine-grained history. The 27pp probe gap is the framework's intended axis of evaluation — historical recall + analytics — not net-worth maximization.
+
+Configs: [`vending/scroll.json`](configs/vending/scroll.json), [`vending/baseline.json`](configs/vending/baseline.json).
 
 ## Install
 
@@ -62,8 +75,9 @@ python scripts/run_longmemeval.py \
     --config configs/longmemeval/scroll_deepseek.json \
     --seed 1 --max-parallel 8 --include-abstention
 
-# Vending — 30-day single run
-Scroll --config configs/vending/scroll.json --seed 1
+# Vending — 180-day single run (both policies)
+Scroll --config configs/vending/scroll.json   --seed 1
+Scroll --config configs/vending/baseline.json --seed 1
 ```
 
 Outputs land under `output/<env>/<policy>_<seed>_<config-hash8>/`:
