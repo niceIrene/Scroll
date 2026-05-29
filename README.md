@@ -4,7 +4,7 @@
 
 A reference implementation of a memory-system pattern for LLM agents on long-horizon tasks: long-term memory lives outside the LLM context as an append-only event log `E` plus a derived memoryspace `W = build(E)`; the agent uses CodeAct (writing Python in a sandboxed REPL with `log` and `ms` bound) to retrieve into context on demand.
 
-Three benchmarks ship with the framework: **LongMemEval** (chat-memory probes), **Vending Machine** (long-horizon planning), and **BEAM** (long-context chat-memory at 100K–10M tokens, [Tavakoli ICLR 2026](https://arxiv.org/abs/2510.27246)).
+Three benchmarks ship with the framework: **LongMemEval** (chat-memory probes), **Vending Machine** (long-horizon planning), and **BEAM** (long-context chat-memory at 100K–10M tokens).
 
 See [`docs/scroll.md`](docs/scroll.md) for the design rationale and the (E, W, CodeAct) decomposition.
 
@@ -189,17 +189,6 @@ The env contract is in [`src/Scroll/core/_environment.py`](src/Scroll/core/_envi
 6. Drop one config under `configs/<env>/scroll.json` with `"environment": "<env>"`.
 
 The registry resolves `"environment": "<env>"` to `Scroll.benchmarks.<env>` automatically. No changes to `benchmark.py` or `core/` should be needed.
-
-## Citation
-
-```bibtex
-@misc{scroll2026,
-  title  = {{SCROLL}: Session-as-Context, Recoverable Off-context LLM Log},
-  author = {<authors>},
-  year   = {2026},
-  note   = {Code: \url{<repo>}}
-}
-```
 
 ## License
 
