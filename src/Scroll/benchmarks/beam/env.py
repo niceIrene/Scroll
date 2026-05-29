@@ -54,16 +54,16 @@ class BeamEnv(BaseEnvironment):
             cfg.dataset_root, cfg.scale, cfg.chat_id,
         )
 
-        # PR #5: under the new SCROLL-pure path
+        # Under the SCROLL-pure path
         # (``cfg.agent_during_ingestion=False``, the default), every
-        # batch is bulk-loaded into ``E`` by :meth:`ingest_all` at task
-        # start and probes fire end-of-task — so ``num_turns = 0`` and
-        # the per-turn loop never runs.
+        # batch is bulk-loaded into ``E`` by :meth:`ingest_all` at
+        # task start and probes fire end-of-task — so ``num_turns =
+        # 0`` and the per-turn loop never runs.
         #
-        # Under the legacy path (``cfg.agent_during_ingestion=True``),
-        # we keep today's behavior: ``num_turns = num_batches + 1``,
-        # one batch per iteration, and the virtual ``+1`` probe-only
-        # turn. ``is_terminal`` allows the +1 iteration through.
+        # Under the legacy path (``cfg.agent_during_ingestion=True``):
+        # ``num_turns = num_batches + 1`` — one batch per iteration,
+        # plus a virtual ``+1`` probe-only turn. ``is_terminal``
+        # allows the +1 iteration through.
         if cfg.agent_during_ingestion:
             cfg.num_turns = self.item.num_batches + 1
         else:
@@ -134,14 +134,13 @@ class BeamEnv(BaseEnvironment):
     def is_terminal(self) -> bool:
         # Legacy path (``agent_during_ingestion=True``): allow exactly
         # one iteration past the last batch for the probe-only turn.
-        # New path (``agent_during_ingestion=False``): num_turns is 0
-        # so the per-turn loop never enters; this method's return
-        # value is irrelevant in practice.
+        # SCROLL-pure path: num_turns is 0, so the per-turn loop
+        # never enters and this return is irrelevant.
         return self.turn_idx > self.item.num_batches
 
     # ------------------------------------------------------------------
-    # Task lifecycle (PR #7: env exposes data only; BeamIngestor.bootstrap
-    # owns the env → E bulk-load step)
+    # Task lifecycle — env exposes data only; BeamIngestor.bootstrap
+    # owns the env → E bulk-load step.
     # ------------------------------------------------------------------
 
     def get_end_of_task_probes(self):
@@ -236,7 +235,7 @@ class BeamEnv(BaseEnvironment):
         cfg.scale = data["scale"]
         cfg.chat_id = data["chat_id"]
         env = cls(cfg, seed=data.get("seed", 0))
-        # Accept legacy ``session_idx`` ckpts written before PR #2.
+        # ``session_idx`` is the legacy on-disk key for ``turn_idx``.
         env.turn_idx = data.get("turn_idx", data.get("session_idx", 0))
         env._today_logs = list(data.get("today_logs") or [])
         return env

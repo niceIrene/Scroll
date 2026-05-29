@@ -73,7 +73,8 @@ class BaseEnvironment(ABC):
     def get_end_of_task_probes(self) -> list[ProbeSpec]:
         """Return probes that fire AFTER the last turn, not on a turn.
 
-        Default: empty. LME (PR #4) and BEAM (PR #5) override.
+        Default: empty. LME and BEAM override to fire their QA / probe
+        questions here under ``agent_during_ingestion=false``.
         """
         return []
 

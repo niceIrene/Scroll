@@ -36,23 +36,22 @@ class BeamEnvConfig:
     judge_api_key_env: str = "OPENAI_API_KEY"
     judge_api_base: str | None = None
 
-    # PR #5 loop-redesign switch (mirrors LongMemEvalEnvConfig). When
-    # ``False`` (default, the new SCROLL-pure path): the env
-    # bulk-loads every batch into ``E`` at task start via
+    # SCROLL-pure vs. legacy ingestion path (mirrors
+    # LongMemEvalEnvConfig). When ``False`` (default, SCROLL-pure):
+    # the env bulk-loads every batch into ``E`` at task start via
     # :meth:`ingest_all`, ``cfg.num_turns`` is forced to ``0``, and
     # all M probing questions fire end-of-task via
     # :meth:`get_end_of_task_probes`. When ``True`` (legacy):
     # ``cfg.num_turns = num_batches + 1``, the agent's per-turn
     # ``run_turn`` mirrors one batch into ``E`` per iteration, and
     # probes fire on the ``+1`` turn via the per-turn registry.
-    # Dropped in PR #6 once parity is validated.
     agent_during_ingestion: bool = False
 
-    # PR #6: how the M end-of-task probes are isolated from each other.
-    # ``"shared"`` (default): all probes share one agent session — probe N
-    # sees probes 1..N-1's exchange in ``_history``. Cheap, matches
-    # today's behavior. ``"fresh"``: each probe (except the first) gets
-    # a fresh agent session — answers come purely from ``W``. See
+    # How the M end-of-task probes are isolated from each other.
+    # ``"shared"`` (default): all probes share one agent session —
+    # probe N sees probes 1..N-1's exchange in ``_history``. Cheap.
+    # ``"fresh"``: each probe (except the first) gets a fresh agent
+    # session — answers come purely from ``W``. See
     # :meth:`BaseEnvironment.probe_isolation` for the full contract.
     probe_isolation: str = "shared"
 

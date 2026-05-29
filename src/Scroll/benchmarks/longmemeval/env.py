@@ -8,11 +8,11 @@ chat session and runs no scoring of its own — the only scored event
 is the end-of-history probe wired up in :mod:`tasks.probes`.
 
 Probe wiring lives in :mod:`tasks.probes`: at construction time we
-register the loaded item as the *active probe target*, so
-``get_probes_for_turn(N)`` (where ``N == total_sessions + 1``)
-returns one ProbeSpec for this run. This is set per-run because the
-question and its haystack length are item-specific. PR #4 retires
-the ``+1 probe-only turn`` trick in favor of an end-of-task probe.
+register the loaded item as the *active probe target*, so the QA
+fires either via :meth:`get_end_of_task_probes` (default
+``agent_during_ingestion=false`` path) or on the ``+1`` turn under
+the legacy per-turn ingestion path. This is set per-run because the
+question and its haystack length are item-specific.
 """
 
 from __future__ import annotations
@@ -74,17 +74,17 @@ class LongMemEvalEnvConfig:
     judge_api_key_env: str = "CN_DASHSCOPE_API_KEY"
     judge_api_base: str | None = None
 
-    # PR #4 loop-redesign switch. When ``False`` (default, the new
-    # SCROLL-pure path): the env bulk-loads the haystack into ``E``
-    # at task start via :meth:`ingest_all`, ``cfg.num_turns`` is
-    # forced to ``0`` (no per-turn loop), and the probe fires once via
-    # :meth:`get_end_of_task_probes`. When ``True`` (legacy fallback):
-    # ``cfg.num_turns = total_sessions + 1``, the agent's per-turn
-    # ``run_turn`` mirrors one chat session into ``E`` per iteration,
-    # and the probe fires on the ``+1`` turn via the per-turn registry.
-    # Flag exists to back out PR #4 cleanly if the new path regresses
-    # judge scores in the parity sweep; PR #6 drops it once we've
-    # validated parity (or kept the legacy path on purpose).
+    # SCROLL-pure vs. legacy ingestion path. When ``False`` (default,
+    # the SCROLL-pure path): the env bulk-loads the haystack into
+    # ``E`` at task start via :meth:`ingest_all`, ``cfg.num_turns`` is
+    # forced to ``0`` (no per-turn loop), and the probe fires once
+    # via :meth:`get_end_of_task_probes`. When ``True`` (legacy
+    # fallback): ``cfg.num_turns = total_sessions + 1``, the agent's
+    # per-turn ``run_turn`` mirrors one chat session into ``E`` per
+    # iteration, and the probe fires on the ``+1`` turn via the
+    # per-turn registry. Kept as a flag so a regression on the
+    # SCROLL-pure path can fall back to the legacy mode without code
+    # changes.
     agent_during_ingestion: bool = False
 
     @classmethod
@@ -124,17 +124,16 @@ class LongMemEvalEnv(BaseEnvironment):
             items, cfg.question_id, cfg.question_index
         )
 
-        # PR #4: under the new SCROLL-pure path
+        # Under the SCROLL-pure path
         # (``cfg.agent_during_ingestion=False``, the default), the
         # haystack is bulk-loaded into ``E`` by :meth:`ingest_all` at
         # task start and the probe fires at end-of-task — so
         # ``num_turns = 0`` and the per-turn loop never runs.
         #
-        # Under the legacy path (``cfg.agent_during_ingestion=True``),
-        # we keep today's behavior: ``num_turns = total_sessions + 1``,
-        # one ingestion iteration per chat session, and a virtual
-        # ``+1`` probe-only turn. ``is_terminal`` allows the +1
-        # iteration through.
+        # Under the legacy path (``cfg.agent_during_ingestion=True``):
+        # ``num_turns = total_sessions + 1`` — one ingestion iteration
+        # per chat session, plus a virtual ``+1`` probe-only turn.
+        # ``is_terminal`` allows the +1 iteration through.
         if cfg.agent_during_ingestion:
             cfg.num_turns = self.item.total_sessions + 1
         else:
@@ -160,12 +159,12 @@ class LongMemEvalEnv(BaseEnvironment):
         Called by the datasource (and through it the turn-loop) at the
         start of each turn, *before* ``agent.run_turn``. Returns a
         list of briefing lines that the framework prepends to the agent's
-        turn prompt as ``Today's briefing``.
+        turn prompt as ``Briefing``.
 
         ``turn_idx`` is the env's current turn counter
-        (``env.turn_idx``), 0 at the first call. Today, ``turn_idx``
-        also indexes directly into ``haystack_sessions``; PR #4
-        decouples them.
+        (``env.turn_idx``), 0 at the first call. Under the legacy
+        ingestion path it also indexes into ``haystack_sessions``;
+        under the SCROLL-pure path the per-turn loop never runs.
         """
         idx = turn_idx
         if idx >= self.item.total_sessions:
@@ -223,14 +222,13 @@ class LongMemEvalEnv(BaseEnvironment):
         # one iteration past the last chat session for the probe-only
         # turn (see ``__init__``: cfg.num_turns is total_sessions+1).
         # Becomes terminal AFTER the probe turn has run.
-        # New path (``agent_during_ingestion=False``): num_turns is 0
-        # so the per-turn loop never enters; this method's return
-        # value is irrelevant in practice.
+        # SCROLL-pure path: num_turns is 0, so the per-turn loop
+        # never enters and this return is irrelevant.
         return self.turn_idx > self.item.total_sessions
 
     # ------------------------------------------------------------------
-    # Task lifecycle (PR #7: env exposes data only; LMEIngestor.bootstrap
-    # owns the env → E bulk-load step)
+    # Task lifecycle — env exposes data only; LMEIngestor.bootstrap
+    # owns the env → E bulk-load step.
     # ------------------------------------------------------------------
 
     def get_end_of_task_probes(self):
@@ -249,9 +247,8 @@ class LongMemEvalEnv(BaseEnvironment):
     def substrate_endgame_prompt(self) -> str:
         return _LME_SUBSTRATE_ENDGAME
 
-    # NOTE: no ``probe_substrate_prompt`` override — LME's format reminders
-    # were folded into _LME_PROBE_HINT (most useful bits) + redundant
-    # bullets removed; nothing left to inject at the env level.
+    # No ``probe_substrate_prompt`` override — LME's format reminders
+    # live in ``_LME_PROBE_HINT``; nothing left to inject at the env level.
 
     def probe_user_postscript(self) -> str:
         from Scroll.benchmarks.longmemeval.tasks.probes import compose_user_postscript

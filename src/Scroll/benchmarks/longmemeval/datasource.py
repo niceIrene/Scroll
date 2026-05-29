@@ -20,7 +20,7 @@ This module colocates two distinct concerns:
                                memory only)
 
    The oracle file's ``haystack_session_ids`` are NOT pre-sorted; we
-   sort by ``haystack_dates`` on load so the session loop replays
+   sort by ``haystack_dates`` on load so the turn loop replays
    sessions in chronological order. ``s_cleaned`` and ``m_cleaned``
    are already sorted upstream (we still sort defensively — cheap
    and idempotent).
@@ -33,7 +33,7 @@ This module colocates two distinct concerns:
 2. **Runtime adapter** — ``LongMemEvalDataSource``.
 
    Wraps :meth:`LongMemEvalEnv.begin_turn` for the SCROLL harness
-   so the session loop can drive the env each turn.
+   so the turn loop can drive the env each turn.
 """
 
 from __future__ import annotations

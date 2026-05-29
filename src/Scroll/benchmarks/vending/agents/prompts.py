@@ -135,7 +135,7 @@ fixed; you don't need to introspect it.
 
 KEY NAMING — ``day`` is the 1-indexed business day number, same as
 ``today`` in the REPL and ``turn_idx`` in log entries (``session_idx``
-is an accepted alias for back-compat).
+is an accepted alias).
 
   sales(                                       -- ⭐ revenue questions
       day      INTEGER NOT NULL,

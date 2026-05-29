@@ -32,17 +32,17 @@ _log = logging.getLogger(__name__)
 class BaseAgent(ABC):
     """Interface that all benchmark agents must implement.
 
-    Every agent — heuristic or LLM-based — follows the same per-turn
-    cycle: ``receive_context → run_turn → receive_outcomes``.
+    Task lifecycle: ``bootstrap`` → ``start_session`` → per-turn loop
+    (``receive_context → run_turn → receive_outcomes``, zero or more
+    iterations) → end-of-task probes → ``end_session``. Vending runs
+    the loop every turn; LME / BEAM in their default mode
+    (``agent_during_ingestion=false``) set ``num_turns=0`` and answer
+    purely from ``W`` via end-of-task probes.
 
-    A *session* (= agent-instance lifetime) wraps the per-turn cycle.
-    Today every env runs exactly one session per task, but the
-    ``start_session`` / ``end_session`` hooks let future multi-session
-    envs (or the BEAM ``probe_isolation="fresh"`` mode in PR #6) spawn
-    a fresh agent context per session without changing the per-turn
-    cycle. Both hooks default to no-ops; subclasses override for
-    per-instance setup / teardown (cross-task store flushes, distilled-
-    playbook reloads, etc.).
+    A *session* = agent-instance lifetime. Today every env runs one
+    session per task; ``start_session`` / ``end_session`` exist so
+    future multi-session envs (or BEAM ``probe_isolation="fresh"``) can
+    spawn a fresh agent context per session. Both default to no-ops.
     """
 
     last_context: list[str]
@@ -130,7 +130,7 @@ class BaseAgent(ABC):
         default value is ``None``.
 
         Putting this text NEXT TO the probe question (instead of in the
-        agent's ``sys_prompt``) keeps it out of the session-loop prompt
+        agent's ``sys_prompt``) keeps it out of the turn-loop prompt
         where it's irrelevant and brings it adjacent to the actual
         probe Q where the model is most likely to act on it.
 

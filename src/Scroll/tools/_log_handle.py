@@ -83,20 +83,20 @@ class LogHandle:
         role: str | None = None,
         kind: str | None = None,
         *,
-        day: int | None = None,  # back-compat alias for session_idx
+        day: int | None = None,  # alias for ``session_idx`` (vending prompts)
     ) -> list[LogEntry]:
         """Return entries matching ``session_idx`` and/or ``role`` and/or ``kind``.
 
         Args:
             session_idx: Restrict to entries whose ``.turn_idx == session_idx``.
-                (Param name kept for agent-prompt back-compat; reads
-                from the renamed ``LogEntry.turn_idx`` field.)
+                (Param name is the spelling LME / BEAM prompts use; it
+                indexes the ``LogEntry.turn_idx`` field.)
             role: Restrict to entries whose ``.role == role``
                 (one of ``"system"``, ``"user"``, ``"assistant"``, ``"tool"``).
             kind: Restrict to entries whose ``metadata.kind == kind``
                 (e.g. ``"code"``, ``"stdout"``, ``"compression_summary"``).
-            day: deprecated alias for ``session_idx`` (kept so old agent
-                prompts that say ``log.slice(day=N)`` still work).
+            day: alias for ``session_idx`` — vending prompts spell it
+                ``log.slice(day=N)``.
         """
         if session_idx is None and day is not None:
             session_idx = day
@@ -115,7 +115,7 @@ class LogHandle:
         """Return entries with ``start <= entry.turn_idx <= end``."""
         return [e for e in self._log.entries if start <= e.turn_idx <= end]
 
-    # Back-compat alias — agent system prompts mention ``range_by_day``.
+    # Alias for vending prompts, which spell it ``range_by_day``.
     range_by_day = range_by_session
 
     def search(self, query: str, k: int = 20) -> list[LogEntry]:
@@ -155,7 +155,7 @@ class LogHandle:
         kind: str | None = None,
         entries: Iterable[LogEntry] | None = None,
         min_score: float = 0.0,
-        day: int | None = None,  # back-compat alias for session_idx
+        day: int | None = None,  # alias for ``session_idx`` (vending prompts)
     ) -> list[tuple[LogEntry, float]]:
         """Vector-similarity search over E. NEAREST-NEIGHBOR, not substring.
 

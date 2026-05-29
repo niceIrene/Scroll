@@ -185,15 +185,16 @@ def _run_task(
                         break
 
             # Turn loop completed (no interrupt). Fire any end-of-task
-            # probes. Empty by default — LME / BEAM override
-            # ``env.get_end_of_task_probes`` in PRs #4 / #5.
+            # probes. Empty by default; LME / BEAM override
+            # ``env.get_end_of_task_probes`` to fire their QA / probe
+            # questions here under ``agent_during_ingestion=false``.
             eot_probes = env.get_end_of_task_probes()
             if eot_probes and is_llm:
-                # PR #6: ``env.probe_isolation()`` chooses between
-                # ``"shared"`` (all probes in one agent session, today's
-                # behavior — cheap) and ``"fresh"`` (each probe past
-                # the first ends the current session and starts a new
-                # one — SCROLL-purity test, more LLM cost).
+                # ``env.probe_isolation()`` chooses between ``"shared"``
+                # (all probes in one agent session — cheap) and
+                # ``"fresh"`` (each probe past the first ends the
+                # current session and starts a new one — SCROLL-purity
+                # test, more LLM cost).
                 isolation = env.probe_isolation()
                 with _tracer.start_as_current_span("end_of_task_probes"):
                     for i, probe in enumerate(eot_probes):
@@ -359,11 +360,11 @@ def _run_single_inner(
     is_llm = agent_cfg.policy not in ("heuristic",)
 
     try:
-        # ``_run_task`` drives ingest_all + start_session + the per-turn
-        # loop + end-of-task probes + end_session for one task. Today
-        # every env's per-turn loop is the only piece doing work
-        # (ingest_all / get_end_of_task_probes default to no-op); PR #4
-        # (LME) and PR #5 (BEAM) wire the new hooks per-env.
+        # ``_run_task`` drives bootstrap + start_session + the per-turn
+        # loop + end-of-task probes + end_session for one task. Vending
+        # exercises the per-turn loop every turn; LME / BEAM (default
+        # ``agent_during_ingestion=false``) skip it and answer purely
+        # from ``W`` via ``get_end_of_task_probes``.
         # When ``keep_logs`` is False, hide ``output_dir`` from the
         # task driver so it skips writing ``session_logs.jsonl`` (and
         # per-turn checkpoint subdirs). ``probe_results.json`` is

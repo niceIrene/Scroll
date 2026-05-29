@@ -6,21 +6,19 @@ probes); their agents share:
   - ``make_time_range_extractor`` — builds the agent-facing async
     ``extract_time_range(question)`` helper (one one-shot LLM call to
     pull a YYYY-MM-DD window out of a probe question).
-  - ``probe_session_body`` / ``handle_only_body`` — universal session-
-    loop bodies (LME auto-advances and never sees them; BEAM does).
+  - ``probe_turn_body`` / ``handle_only_body`` — universal turn-loop
+    bodies (LME auto-advances and never sees them; BEAM does).
   - ``write_chat_turn_entries`` — mirrors a session's chat turns into
     the unified log E as ``kind="chat_turn"`` entries (one per turn).
     The X = f(E) contract: the transcript IS in E; agents only differ
     by their retrieval function ``f``.
   - ``make_chat_memory_namespace`` — REPL namespace shared by every
     chat-memory agent (stdlib pre-binds + optional ``today_session``
-    reader on the log). Session-loop termination is signalled by
+    reader on the log). Turn-loop termination is signalled by
     emitting a response with no Python code block — there is no
     explicit advance-day primitive.
 
-Previously these lived under ``Scroll.benchmarks.longmemeval.agents``
-and BEAM cross-imported from the LME package. Moved here so neither
-benchmark reaches into the other.
+Lives here so neither benchmark reaches into the other.
 """
 
 from __future__ import annotations
@@ -105,10 +103,6 @@ def probe_turn_body(turn_idx: int) -> str:
         "wasted compute — the probe-time prompt will give you "
         "everything you need for retrieval and answering."
     )
-
-
-# Back-compat alias; drop in PR #6.
-probe_session_body = probe_turn_body
 
 
 def handle_only_body() -> str:
@@ -212,9 +206,7 @@ def _make_today_session(agent) -> Callable[[], list[dict[str, Any]]]:
 
     def today_session() -> list[dict[str, Any]]:
         log = getattr(agent, "log", None)
-        # Accept either ``_current_turn`` (new) or ``_current_session`` (legacy
-        # subclasses that haven't migrated yet — back-compat for one release).
-        today = getattr(agent, "_current_turn", getattr(agent, "_current_session", None))
+        today = getattr(agent, "_current_turn", None)
         if log is None or today is None:
             return []
         out: list[dict[str, Any]] = []
@@ -241,8 +233,8 @@ def make_chat_memory_namespace(state, agent=None) -> dict[str, Callable]:
     """Return the REPL namespace common to every chat-memory agent
     (LongMemEval, BEAM, …).
 
-    ``state`` is the framework :class:`ToolState` (currently unused —
-    kept for API symmetry with per-env namespace builders). ``agent``
+    ``state`` is the framework :class:`ToolState`, unused here but
+    kept for API symmetry with per-env namespace builders. ``agent``
     is the agent instance (used by ``today_session`` to read chat_turn
     entries from the agent's log).
 

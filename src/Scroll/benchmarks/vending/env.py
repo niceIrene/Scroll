@@ -343,7 +343,7 @@ class VendingEnv(BaseEnvironment):
     @classmethod
     def from_checkpoint(cls, data: dict, cfg: EnvConfig) -> "VendingEnv":
         env = cls(cfg, seed=0)  # seed doesn't matter, RNG is restored
-        # Accept legacy ``session_idx`` ckpts written before PR #2.
+        # ``session_idx`` is the legacy on-disk key for ``turn_idx``.
         env.turn_idx = data.get("turn_idx", data.get("session_idx", 0))
         env.cash = data["cash"]
         env.machine_cash = data["machine_cash"]

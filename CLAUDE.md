@@ -235,6 +235,14 @@ shipped LME production config):
 - **Tracing**: optional via `--tracing-url`. Phoenix-compatible OTLP. See `Scroll._tracing` and the CLI `--help`.
 - **Single policy per env**: LME and Vending both expose only `"policy": "scroll"` (old `code_auto_v2` / `code_auto` aliases were removed). Adding a new policy means adding a branch to that env's `create_agent`.
 
+## Comment style
+
+- Default to no comments. Write one only when the *why* isn't obvious (hidden constraint, workaround, surprising edge case). Identifiers cover *what*.
+- No emojis.
+- No refactor / conversation history: no PR numbers, `renamed from X`, `used by X`, `added for the Y flow`.
+- No time-bound markers: no `today's behavior`, `will be dropped`, `pending rewrite`, naked `TODO`. Do it or file an issue.
+- Retention comments explain what currently relies on the kept code (`agent prompts spell this name`), not the historical `kept for back-compat`.
+
 ## What's intentionally not here
 
 - **Baselines**: the earlier consolidation removed every non-SCROLL agent (basic, code_agent, agentscope_reme, rlm, database_*, adaptive*). Restoring one for paper comparison is a future task; see `docs/scroll.md` → "Why this is publishable" for context.

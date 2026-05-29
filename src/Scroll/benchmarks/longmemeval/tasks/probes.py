@@ -59,10 +59,11 @@ _active_probe: ProbeSpec | None = None
 _active_qtype: str | None = None
 _active_is_abstention: bool = False
 # Mirrors ``LongMemEvalEnvConfig.agent_during_ingestion`` for the active
-# run. Under the default ``False`` path the probe fires end-of-task
-# (see :meth:`LongMemEvalEnv.get_end_of_task_probes`) and the per-turn
-# registry returns ``[]``. Under the legacy ``True`` path the per-turn
-# registry returns the probe on the ``+1`` turn (today's behavior).
+# run. Under the SCROLL-pure path (``False``) the probe fires
+# end-of-task via :meth:`LongMemEvalEnv.get_end_of_task_probes` and
+# the per-turn registry returns ``[]``. Under the legacy path
+# (``True``) the per-turn registry returns the probe on the ``+1``
+# turn.
 _active_agent_during_ingestion: bool = False
 
 
@@ -177,12 +178,14 @@ def _build_probe(item: LongMemEvalItem, cfg: LongMemEvalEnvConfig) -> ProbeSpec:
 
     return ProbeSpec(
         question_id=qid,
-        # Probe fires on the dedicated probe-only turn = total_sessions+1
-        # (one iteration past the last haystack chat session). The probe
-        # turn's run_turn exposes "no chat session today" so the agent's
-        # turn-loop history at probe time isn't dominated by the last
-        # ingest's transcript. PR #4 retires this trick in favor of an
-        # end-of-task probe path.
+        # ``turn_idx`` only matters under the legacy
+        # ``agent_during_ingestion=True`` path: the probe rides on the
+        # dedicated probe-only turn ``total_sessions+1`` (one iteration
+        # past the last haystack chat session), whose ``run_turn``
+        # exposes "no chat session today" so the agent's turn-loop
+        # history at probe time isn't dominated by the last ingest's
+        # transcript. The SCROLL-pure path fires the probe end-of-task
+        # and ignores this field.
         turn_idx=item.total_sessions + 1,
         question=question_text,
         ground_truth_fn=gt_fn,

@@ -4,7 +4,6 @@ Applies the :class:`Scroll.core.ScrollAgent` harness to the vending
 machine simulation. The harness owns ingestion of every iteration's
 events; the agent reads from ``ms`` / ``log`` and reaches for the
 recursive ``rlm`` sub-agent only when the structured surfaces miss.
-(Module-level prompts still reference ``sub_llm`` — pending rewrite.)
 
 Layout:
   - 7 base tables (``sales``, ``deliveries``, ``orders``,
@@ -52,7 +51,7 @@ def _make_env_namespace(state: ToolState) -> dict[str, Callable]:
 
     The env action tools are unwrapped from their AgentScope
     ``ToolResponse`` envelopes so REPL code sees plain strings. The
-    session-loop ends when the model replies without a Python code
+    turn-loop ends when the model replies without a Python code
     block — there is no explicit advance-day primitive in the REPL.
     """
     closures = _make_env_tool_closures(state)
@@ -93,6 +92,13 @@ class VendingAgent(ScrollAgent):
         # super().__init__ because receive_context can fire during
         # checkpoint resume.
         self._emitted_inbox_count = 0
+        # Buffers the most recent turn's env outcome logs and datasource
+        # notes so :meth:`_extra_prefix_sections` can splice them into
+        # the next turn's user message as "Outcomes from turn N" /
+        # "Briefing" sections. Set before super().__init__ so they
+        # exist if receive_* fires during checkpoint resume.
+        self._pending_env_outcomes: list[str] = []
+        self._pending_datasource_notes: list[str] = []
         super().__init__(cfg, storage, data)
 
     # ----- SCROLL hooks -----
@@ -166,6 +172,45 @@ class VendingAgent(ScrollAgent):
                     **serialize_env_snapshot(env),
                 },
             ))
+
+    # ----- Per-turn prompt prefix wiring -----
+    # ScrollAgent's receive_* lands the data into E and triggers an
+    # ingestor catch-up; we additionally buffer it for the next turn's
+    # user message so the model sees "Outcomes from turn N" / "Briefing"
+    # sections without having to query ms. The probe-time fallback in
+    # ``_evaluation._answer_probe`` reads ``_pending_env_outcomes`` to
+    # surface end-of-turn events into the GT's reporting window.
+
+    def receive_outcomes(self, turn_idx: int, logs: list[str]) -> None:
+        self._pending_env_outcomes = list(logs)
+        super().receive_outcomes(turn_idx, logs)
+
+    def receive_context(self, turn_idx: int, notes: list[str]) -> None:
+        self._pending_datasource_notes = list(notes)
+        super().receive_context(turn_idx, notes)
+
+    def _extra_prefix_sections(self, turn_idx: int) -> list[str]:
+        sections: list[str] = []
+        if self._pending_env_outcomes:
+            lines = "\n".join(f"  - {line}" for line in self._pending_env_outcomes)
+            sections.append(f"Outcomes from turn {turn_idx - 1}:\n{lines}")
+        if self._pending_datasource_notes:
+            lines = "\n".join(f"  - {line}" for line in self._pending_datasource_notes)
+            sections.append(f"Briefing:\n{lines}")
+        self._pending_env_outcomes = []
+        self._pending_datasource_notes = []
+        return sections
+
+    def to_checkpoint(self) -> dict:
+        data = super().to_checkpoint()
+        data["pending_env_outcomes"] = list(self._pending_env_outcomes)
+        data["pending_datasource_notes"] = list(self._pending_datasource_notes)
+        return data
+
+    def from_checkpoint(self, data: dict) -> None:
+        super().from_checkpoint(data)
+        self._pending_env_outcomes = list(data.get("pending_env_outcomes", []))
+        self._pending_datasource_notes = list(data.get("pending_datasource_notes", []))
 
     # ----- Probe answering -----
     # Vending treats a probe as just one more user message in the same

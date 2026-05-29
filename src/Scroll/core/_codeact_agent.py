@@ -23,6 +23,7 @@ import logging
 import re
 import signal
 import time
+from abc import abstractmethod
 from functools import wraps
 from typing import TYPE_CHECKING, Any
 
@@ -335,12 +336,9 @@ class CodeActAgent(BaseAgent):
 
         self.cfg = cfg
         self.log = storage  # ConversationLog (E)
-        self.storage = storage  # backwards-compat alias during transition
         self.data = data
         self.last_context: list[str] = []
         self._current_turn: int = 0
-        self._pending_env_outcomes: list[str] = []
-        self._pending_datasource_notes: list[str] = []
         self._tool_state = ToolState(data=data, cfg=cfg)
         self._iter_count: int = 0
 
@@ -394,32 +392,41 @@ class CodeActAgent(BaseAgent):
     # Per-turn prompts
     # ------------------------------------------------------------------
 
+    @abstractmethod
     def turn_prompt(self, turn_idx: int) -> str:
-        return (
-            f"Day {turn_idx} has started.\n\n"
-            "Decide what to do today. Write Python to take actions. "
-            "When you have no more actions for today, reply with no "
-            "Python code block to end the day."
-        )
+        """Return the user-message body for turn ``turn_idx``.
+
+        Env-specific — each benchmark phrases its turn boundary
+        differently (vending = calendar day, LME/BEAM = probe vs.
+        ingestion turn), so this has no env-agnostic default.
+        """
 
     def _compose_turn_user_msg(self, turn_idx: int) -> str:
-        """Prepend yesterday's env outcomes + today's datasource notes."""
+        """Build the per-turn user message: namespace reminder + body.
+
+        Subclasses that need to splice env-side state in front of the
+        body (e.g. VendingAgent's pending outcomes / briefing) override
+        :meth:`_extra_prefix_sections`.
+        """
         body = self.turn_prompt(turn_idx)
         prefix_sections: list[str] = []
         ns_reminder = self._namespace_reminder()
         if ns_reminder:
             prefix_sections.append(ns_reminder)
-        if self._pending_env_outcomes:
-            lines = "\n".join(f"  - {line}" for line in self._pending_env_outcomes)
-            prefix_sections.append(f"Overnight events from turn_idx {turn_idx - 1}:\n{lines}")
-        if self._pending_datasource_notes:
-            lines = "\n".join(f"  - {line}" for line in self._pending_datasource_notes)
-            prefix_sections.append(f"Today's briefing:\n{lines}")
-        self._pending_env_outcomes = []
-        self._pending_datasource_notes = []
+        prefix_sections.extend(self._extra_prefix_sections(turn_idx))
         if prefix_sections:
             body = "\n\n".join(prefix_sections) + "\n\n" + body
         return body
+
+    def _extra_prefix_sections(self, turn_idx: int) -> list[str]:
+        """Env-specific prefix sections to splice before ``turn_prompt``.
+
+        Default: none. Override to render buffered env state (e.g.
+        prior-turn outcomes, datasource briefings) into the user
+        message. Called once per turn from :meth:`_compose_turn_user_msg`;
+        implementations should also clear any consumed state.
+        """
+        return []
 
     def _namespace_reminder(self) -> str:
         """One-line listing of REPL globals bound inside ``execute_python``.
@@ -537,10 +544,16 @@ class CodeActAgent(BaseAgent):
         return self._tool_state._turn_ended
 
     def receive_outcomes(self, turn_idx: int, logs: list[str]) -> None:
-        self._pending_env_outcomes = list(logs)
+        # No-op concrete impl to satisfy BaseAgent's abstract contract.
+        # Subclasses that need to render outcomes into the next turn's
+        # prompt (e.g. VendingAgent) override this to buffer ``logs``.
+        pass
 
     def receive_context(self, turn_idx: int, notes: list[str]) -> None:
-        self._pending_datasource_notes = list(notes)
+        # No-op concrete impl to satisfy BaseAgent's abstract contract.
+        # Subclasses that need to render notes into the next turn's
+        # prompt (e.g. VendingAgent) override this to buffer ``notes``.
+        pass
 
     def run_turn(self, env) -> list[str]:
         turn_idx = env.turn_idx
@@ -628,16 +641,21 @@ class CodeActAgent(BaseAgent):
         return actions
 
     async def _run_turn_inner(self) -> None:
-        """Session-loop inner: one user turn → assistant agentic exchange.
+        """Turn-loop inner: one user message → assistant tool-use loop.
 
-        Uses the OpenAI tool-call protocol:
+        The on-history wire shape is OpenAI Chat Completions tool-call
+        format (assistant messages carry ``tool_calls``; tool results
+        are ``role="tool"`` keyed by ``tool_call_id``). Per-provider
+        asymmetries (OpenAI Responses API, Anthropic Messages) are
+        absorbed by the adapters in ``_chat_model_adapters``, so this
+        loop sees one shape regardless of provider.
 
-        - The model sees ``self.tools_schema`` (typically just
+        - Model sees ``self.tools_schema`` (typically just
           ``execute_python``) and responds with either plain content
-          (= end of turn) or one+ ``tool_use`` blocks.
-        - Each ``tool_use`` block is executed in the persistent REPL
-          and the result is appended as a ``role=tool`` message keyed
-          by ``tool_call_id``.
+          (= end of turn) or one+ tool-use blocks (decoded from the
+          provider via the adapter).
+        - Each tool-use block is executed in the persistent REPL and
+          the result is appended as a ``role="tool"`` message.
         - The loop iterates until the model emits NO tool calls (= done)
           or ``max_iters_per_turn`` is hit.
         """
@@ -1418,16 +1436,12 @@ class CodeActAgent(BaseAgent):
     def to_checkpoint(self) -> dict:
         return {
             "tool_state": self._tool_state.to_checkpoint(),
-            "pending_env_outcomes": list(self._pending_env_outcomes),
-            "pending_datasource_notes": list(self._pending_datasource_notes),
             "iter_count": self._iter_count,
             "compressed_summary": self._compressed_summary,
         }
 
     def from_checkpoint(self, data: dict) -> None:
         self._tool_state.from_checkpoint(data["tool_state"])
-        self._pending_env_outcomes = list(data.get("pending_env_outcomes", []))
-        self._pending_datasource_notes = list(data.get("pending_datasource_notes", []))
         self._iter_count = int(data.get("iter_count", 0))
         self._compressed_summary = data.get("compressed_summary", "")
 

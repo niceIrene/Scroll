@@ -17,11 +17,11 @@ class LogEntry:
 
     ``turn_idx`` is which env time-slice this entry belongs to (vending
     day, LME chat-session-during-ingest, BEAM batch-during-ingest, or
-    the framework turn number once the agent is in a session). The field
-    was previously named ``session_idx``; the old name is kept as a
-    read-only property + accepted by ``make()`` / ``from_dict()`` /
-    dict-style access so existing agent REPL code and persisted JSONL
-    logs continue to work.
+    the framework turn number once the agent is in a session).
+    ``session_idx`` is exposed as a read-only property + accepted by
+    ``make()`` / ``from_dict()`` / dict-style access, because agent
+    prompts and REPL examples spell it that way; persisted JSONL logs
+    written under the old name also keep loading.
     """
 
     turn_idx: int
@@ -34,11 +34,10 @@ class LogEntry:
 
     @property
     def session_idx(self) -> int:
-        """Deprecated alias for :attr:`turn_idx`.
+        """Alias for :attr:`turn_idx`.
 
-        Kept so agent REPL code that learned ``e.session_idx`` from
-        earlier prompts still resolves. Will be dropped once those
-        prompts are updated.
+        Agent prompts and REPL examples spell ``e.session_idx``, so the
+        attribute name is part of the agent-facing contract.
         """
         return self.turn_idx
 
@@ -52,7 +51,7 @@ class LogEntry:
         tool_result: dict | None = None,
         metadata: dict | None = None,
         *,
-        session_idx: int | None = None,  # back-compat alias
+        session_idx: int | None = None,  # alias spelled by agent prompts
     ) -> "LogEntry":
         if turn_idx is None:
             if session_idx is None:
@@ -85,7 +84,8 @@ class LogEntry:
     # and the docs read like a record. Without these the agent gets
     # ``AttributeError: 'LogEntry' object has no attribute 'get'`` and
     # has to retry. Mapping access mirrors :meth:`to_dict` keys, plus
-    # ``"session_idx"`` as a back-compat alias for ``"turn_idx"``.
+    # ``"session_idx"`` (the name agent prompts spell) as an alias for
+    # ``"turn_idx"``.
     def get(self, key: str, default: Any = None) -> Any:
         if key == "session_idx":
             return self.turn_idx
@@ -107,8 +107,8 @@ class LogEntry:
 
     @classmethod
     def from_dict(cls, d: dict) -> "LogEntry":
-        # Accept ``turn_idx`` (new) or ``session_idx`` (legacy on-disk
-        # logs from before the rename). One-of must be present.
+        # Accept ``turn_idx`` or its legacy spelling ``session_idx``
+        # (older JSONL logs). One-of must be present.
         raw = d.get("turn_idx")
         if raw is None:
             raw = d.get("session_idx", 0)

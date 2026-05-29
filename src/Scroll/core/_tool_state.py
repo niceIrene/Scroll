@@ -40,9 +40,8 @@ def _truncate(text: str, limit: int = MAX_RESULT_CHARS) -> str:
 def _resp(text: str, *, interrupted: bool = False):
     """Wrap ``text`` in an AgentScope ``ToolResponse``.
 
-    Legacy tool closures (in ``vending/tools.py`` and
-    ``tools/sql_tools.py``) still return ``ToolResponse`` for
-    backward-compatibility with any non-substrate caller. The REPL
+    Tool closures (in ``vending/tools.py`` and ``tools/sql_tools.py``)
+    return ``ToolResponse`` for non-substrate callers; the REPL
     namespace builder unwraps it back to ``str`` for the agent.
     """
     _ensure_imports()

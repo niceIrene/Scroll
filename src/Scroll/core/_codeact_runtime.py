@@ -111,9 +111,9 @@ class CellRuntime:
     when ``clear_namespace_each_turn=True``).
 
     The runtime does NOT sandbox — agent-emitted code runs with full
-    Python privileges in the current process, same trust model as
-    today's tool callbacks. Re-evaluate if/when this is exposed to
-    untrusted models.
+    Python privileges in the current process, same trust model as the
+    tool callbacks. Re-evaluate if/when this is exposed to untrusted
+    models.
     """
 
     def __init__(self, initial_globals: dict | None = None) -> None:

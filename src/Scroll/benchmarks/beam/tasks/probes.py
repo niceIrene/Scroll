@@ -155,10 +155,10 @@ _active_cfg: BeamEnvConfig | None = None
 _active_probes: list[ProbeSpec] = []
 _active_category: str | None = None  # last-injected probe's category
 # Mirrors ``BeamEnvConfig.agent_during_ingestion`` for the active run.
-# Under the default ``False`` path probes fire end-of-task (see
-# :meth:`BeamEnv.get_end_of_task_probes`) and the per-turn registry
-# returns ``[]``. Under the legacy ``True`` path the per-turn registry
-# returns all probes on the ``+1`` turn (today's behavior).
+# Under the SCROLL-pure path (``False``) probes fire end-of-task via
+# :meth:`BeamEnv.get_end_of_task_probes` and the per-turn registry
+# returns ``[]``. Under the legacy path (``True``) the per-turn
+# registry returns all probes on the ``+1`` turn.
 _active_agent_during_ingestion: bool = False
 
 
@@ -194,7 +194,7 @@ PROBES: list[ProbeSpec] = []  # populated per-run via set_active_item
 def get_probes_for_turn(turn_idx: int) -> list[ProbeSpec]:
     """Per-turn probe registry.
 
-    Under the new SCROLL-pure path (``agent_during_ingestion=False``,
+    Under the SCROLL-pure path (``agent_during_ingestion=False``,
     default) returns ``[]`` — probes fire end-of-task via
     :meth:`BeamEnv.get_end_of_task_probes`.
 

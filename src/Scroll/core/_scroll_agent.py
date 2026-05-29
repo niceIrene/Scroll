@@ -124,7 +124,7 @@ class ScrollAgent(CodeActAgent):
 
     - Owns ``self.memoryspace`` — the env's :class:`Memoryspace` (W).
     - Binds ``log`` (LogHandle over E) and ``ms`` (memoryspace) into the
-      REPL namespace on every day's reset.
+      REPL namespace on every turn's reset.
     - Optionally exposes ``rlm`` (recursive sub-agent via dspy.RLM).
     - Implements ``W = build(E)``: env data flows through
       :meth:`_emit_context_entries` / :meth:`_emit_outcome_entries` into
@@ -137,19 +137,13 @@ class ScrollAgent(CodeActAgent):
     Required overrides:
       - :meth:`_ensure_schema` — env-specific CREATE TABLE / CREATE VIEW
       - :attr:`ingestor_cls` — the env's :class:`Ingestor` class
-      - :meth:`day_prompt` (already abstract on ``CodeActAgent``)
+      - :meth:`turn_prompt` (already abstract on ``CodeActAgent``)
 
     Optional overrides:
       - :meth:`_emit_context_entries` — extra env data → ``E`` at
         ``receive_context`` time (inbox mail, calendar context, ...)
       - :meth:`_emit_outcome_entries` — extra env data → ``E`` at
         ``receive_outcomes`` time (env snapshot, batch metadata, ...)
-
-    Renamed in PR #2 of the loop redesign: ``session`` → ``turn`` for
-    the substrate concepts. The agent base now exposes ``run_turn`` /
-    ``receive_context(turn_idx, ...)`` / ``receive_outcomes(turn_idx,
-    ...)``. Hook overrides (``_emit_*_entries(turn_idx, ...)``) renamed
-    accordingly.
       - :meth:`_base_namespace` — env-specific tool closures
       - :meth:`extra_namespace` — extra REPL globals beyond
         ``log`` / ``ms`` / ``rlm``
