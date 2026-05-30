@@ -2,11 +2,13 @@
 
 **S**ession-as-**C**ontext, **R**ecoverable **O**ff-context **L**LM **L**og.
 
-A reference implementation of a memory-system pattern for LLM agents on long-horizon tasks: long-term memory lives outside the LLM context as an append-only event log `E` plus a derived memoryspace `W = build(E)`; the agent uses CodeAct (writing Python in a sandboxed REPL with `log` and `ms` bound) to retrieve into context on demand.
+Scroll is an architecture for long-horizon LLM agents that treats context as an *environment*, not a window. The agent's full history lives outside its prompt as an append-only event log `E` — durable across every session it ever runs — together with a derived memoryspace `W = build(E)` that indexes it for fast access. To use anything off-context, the agent doesn't wait for a retriever: it writes Python in a sandboxed REPL with `log` and `ms` bound, turning retrieval into arbitrary computation it authors on the spot.
+
+This avoids the two compromises every long-running agent makes today. Compaction summarizes older turns and drops the originals once the window fills; memory systems extend reach but pre-commit at design time to *what gets extracted* and *what the retrieval pipeline can surface* — capping recall on any query nobody anticipated when the schema was drawn. Scroll keeps the full log as the single source of truth and lets the agent read it the way a programmer reads a file or queries a database.
 
 Three benchmarks ship with the framework: **LongMemEval** (chat-memory probes), **Vending Machine** (long-horizon planning), and **BEAM** (long-context chat-memory at 100K–10M tokens).
 
-See [`docs/scroll.md`](docs/scroll.md) for the design rationale and the (E, W, CodeAct) decomposition.
+See [`design/scroll.html`](design/scroll.html) for the design rationale and the (E, W, CodeAct) decomposition.
 
 ## Headline results
 
@@ -25,12 +27,12 @@ The same scaffold (prompts, retrieval primitives, REPL substrate) runs across bo
 
 Same agent model, same 180-day horizon, same 60-probe suite. Only difference: memory strategy.
 
-| Agent | probe_score | net_worth | units_sold | active turns | bankrupt |
-|---|---:|---:|---:|---:|---:|
-| **scroll · qwen3.7-max** | **0.950** | $1,105.25 | 855 | 73 | False |
-| baseline · qwen3.7-max | 0.683 | $2,563.15 | 2,096 | 175 | False |
+| Agent | probe_score | A (factual recall) | B (multi-step reasoning) |
+|---|---:|---:|---:|
+| **scroll · qwen3.7-max** | **0.950** | **1.000** (32/32) | **0.893** (25/28) |
+| baseline · qwen3.7-max | 0.683 | 0.719 (23/32) | 0.643 (18/28) |
 
-The 60-question probe suite is phrased as realistic stakeholder asks — point-in-time recall, weekly/monthly trends, aggregations, supplier/inventory queries, top-K / abandoned-SKU / price-change detection. SCROLL routes off-context reads through `ms.sql_exec` over the persisted event log `E` (precise historical values); the baseline relies on a rolling LLM summary which smooths out fine-grained history. The 27pp probe gap is the framework's intended axis of evaluation — historical recall + analytics — not net-worth maximization.
+The 60-question probe suite is phrased as realistic stakeholder asks — point-in-time recall, weekly/monthly trends, aggregations, supplier/inventory queries, top-K / abandoned-SKU / price-change detection. A* probes test factual recall (specific old values, non-headline fields, earliest-event lookup); B* probes test multi-step reasoning (paired-event correlation, full-history enumeration, trend comparisons). SCROLL routes off-context reads through `ms.sql_exec` over the persisted event log `E` (precise historical values); the baseline relies on a rolling LLM summary which smooths out fine-grained history.
 
 Configs: [`vending/scroll.json`](configs/vending/scroll.json), [`vending/baseline.json`](configs/vending/baseline.json).
 
@@ -183,26 +185,13 @@ src/Scroll/                    # framework
         └── tasks/probes.py
 
 configs/<env>/                 one JSON per (model, variant)
-docs/scroll.md                 design doc
+design/scroll.html             design rationale (blog post)
 scripts/
 ├── run_longmemeval.py         multi-QA orchestrator
 ├── run_vending.py             Docker-parallel sweep (Vending)
 ├── shard_lme_dataset.py       one-time dataset preprocessing
 └── test_rlm.py                RLM wrapper smoke test
 ```
-
-## Adding a new benchmark
-
-The env contract is in [`src/Scroll/core/_environment.py`](src/Scroll/core/_environment.py). To add an env:
-
-1. Create `src/Scroll/benchmarks/<env>/__init__.py` exporting `ENV_ID`, `ENV_CLS`, `DATASOURCE_CLS`, `parse_env_config`, and `create_agent`.
-2. Implement `<env>/env.py:<Env>(BaseEnvironment)` with `visible_state` / `step_session` / `build_snapshot` (and optionally `today_logs` / `net_worth` / `is_terminal`).
-3. Implement `<env>/datasource.py:<DataSource>(BaseDataSource)` (only `begin_session` is required; other channels have no-op defaults).
-4. Implement `<env>/tasks/probes.py` with `PROBES`, `get_probes_for_session`, and (env-specific) scoring.
-5. Write `<env>/agents/agent.py:<Env>Agent(ScrollAgent)` providing `_ensure_schema`, `_ingest_context` / `_ingest_outcomes`, and `session_prompt`.
-6. Drop one config under `configs/<env>/scroll.json` with `"environment": "<env>"`.
-
-The registry resolves `"environment": "<env>"` to `Scroll.benchmarks.<env>` automatically. No changes to `benchmark.py` or `core/` should be needed.
 
 ## License
 
