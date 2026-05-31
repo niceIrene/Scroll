@@ -32,7 +32,7 @@ Same agent model, same 180-day horizon, same 60-probe suite. Only difference: me
 | **scroll · qwen3.7-max** | **0.950** | **1.000** (32/32) | **0.893** (25/28) |
 | baseline · qwen3.7-max | 0.683 | 0.719 (23/32) | 0.643 (18/28) |
 
-The 60-question probe suite is phrased as realistic stakeholder asks — point-in-time recall, weekly/monthly trends, aggregations, supplier/inventory queries, top-K / abandoned-SKU / price-change detection. A* probes test factual recall (specific old values, non-headline fields, earliest-event lookup); B* probes test multi-step reasoning (paired-event correlation, full-history enumeration, trend comparisons). SCROLL routes off-context reads through `ms.sql_exec` over the persisted event log `E` (precise historical values); the baseline relies on a rolling LLM summary which smooths out fine-grained history.
+The baseline is a context-only counterpart to SCROLL: same CodeAct Python REPL, same env action tools, same model — but no off-context memory (no `ms`, no `log`). Long-horizon recall falls back to chat history plus a rolling LLM summary that compresses the oldest turns once the context budget fills.
 
 Configs: [`vending/scroll.json`](configs/vending/scroll.json), [`vending/baseline.json`](configs/vending/baseline.json).
 
