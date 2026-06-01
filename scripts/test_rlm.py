@@ -139,7 +139,7 @@ def main() -> int:
         print(f"\nlog.entries count: {len(log.entries)}")
         for e in log.entries:
             kind = (e.metadata or {}).get("kind")
-            print(f"  kind={kind} role={e.role} session_idx={e.session_idx}")
+            print(f"  kind={kind} role={e.role} turn_idx={e.turn_idx}")
 
     failures: list[str] = []
     if EXPECTED_SUBSTRING not in answer:

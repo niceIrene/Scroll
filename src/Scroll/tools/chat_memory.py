@@ -6,19 +6,19 @@ probes); their agents share:
   - ``make_time_range_extractor`` — builds the agent-facing async
     ``extract_time_range(question)`` helper (one one-shot LLM call to
     pull a YYYY-MM-DD window out of a probe question).
-  - ``probe_session_body`` / ``handle_only_body`` — universal session-
-    loop bodies (LME auto-advances and never sees them; BEAM does).
+  - ``probe_turn_body`` / ``handle_only_body`` — universal turn-loop
+    bodies (LME auto-advances and never sees them; BEAM does).
   - ``write_chat_turn_entries`` — mirrors a session's chat turns into
     the unified log E as ``kind="chat_turn"`` entries (one per turn).
     The X = f(E) contract: the transcript IS in E; agents only differ
     by their retrieval function ``f``.
   - ``make_chat_memory_namespace`` — REPL namespace shared by every
-    chat-memory agent (``wait_for_next_day`` + stdlib pre-binds +
-    optional ``today_session`` reader on the log).
+    chat-memory agent (stdlib pre-binds + optional ``today_session``
+    reader on the log). Turn-loop termination is signalled by
+    emitting a response with no Python code block — there is no
+    explicit advance-day primitive.
 
-Previously these lived under ``Scroll.benchmarks.longmemeval.agents``
-and BEAM cross-imported from the LME package. Moved here so neither
-benchmark reaches into the other.
+Lives here so neither benchmark reaches into the other.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ import re
 from typing import Any, Awaitable, Callable
 
 from Scroll.core import LogEntry
-from Scroll.core._codeact_agent import make_wait_for_next_day
 
 
 def make_time_range_extractor(
@@ -90,25 +89,25 @@ def make_time_range_extractor(
     return extract_time_range
 
 
-def probe_session_body(session_idx: int) -> str:
-    """Universal probe-session body (used on session N+1).
+def probe_turn_body(turn_idx: int) -> str:
+    """Universal probe-turn body (used on turn N+1).
 
-    The probe session has no haystack content — the agent's only
-    legitimate cell is ``wait_for_next_day()`` to trigger the probe.
+    The probe turn has no haystack content — the agent should
+    advance immediately by emitting a response with no Python code
+    block. The probe fires right after the turn ends.
     """
     return (
-        f"Session {session_idx}: PROBE SESSION. Reply with ONLY this single cell:\n"
-        "```python\nwait_for_next_day()\n```\n"
-        "The probe will fire immediately after. Any other cell here "
-        "(data fetches, inspections, prep) is wasted compute — the "
-        "probe-time prompt will give you everything you need for "
-        "retrieval and answering. Just advance."
+        f"Turn {turn_idx}: PROBE TURN. Reply with NO Python "
+        "code block to advance immediately. The probe will fire right "
+        "after. Any cell here (data fetches, inspections, prep) is "
+        "wasted compute — the probe-time prompt will give you "
+        "everything you need for retrieval and answering."
     )
 
 
 def handle_only_body() -> str:
-    """Session-loop body pointing the agent at the unified log for the
-    current session. ``LongMemEvalAgent`` auto-advances and rarely sees
+    """Turn-loop body pointing the agent at the unified log for the
+    current chat session. ``LongMemEvalAgent`` auto-advances and rarely sees
     this body; BEAM does see it on haystack-session turns.
     """
     return (
@@ -117,8 +116,9 @@ def handle_only_body() -> str:
         "``LogEntry`` objects) or ``today_session()`` (native "
         "dicts). Past sessions: ``log.slice(session_idx=N, "
         "kind=\"chat_turn\")``.\n\n"
-        "Apply your session-loop contract (system prompt) and call "
-        "``wait_for_next_day()`` when done."
+        "Apply your turn-loop contract (system prompt). When you "
+        "have no more actions for this turn, reply with NO Python "
+        "code block to advance."
     )
 
 
@@ -135,11 +135,11 @@ def handle_only_body() -> str:
 # ---------------------------------------------------------------------------
 
 
-def write_chat_turn_entries(log, env, session_idx: int) -> int:
+def write_chat_turn_entries(log, env, turn_idx: int) -> int:
     """Mirror the current chat session into the unified log as one
-    ``kind="chat_turn"`` entry per turn. Idempotent — if the session's
-    chat_turn entries already exist (e.g. on checkpoint resume), no
-    new entries are written.
+    ``kind="chat_turn"`` entry per chat message. Idempotent — if the
+    chat session's chat_turn entries already exist (e.g. on checkpoint
+    resume), no new entries are written.
 
     Each entry's metadata carries ``session_date`` (raw string) and
     ``session_date_iso`` (parsed ISO date, or ``None`` if unparseable)
@@ -147,16 +147,21 @@ def write_chat_turn_entries(log, env, session_idx: int) -> int:
     visit Y") can resolve calendar dates from the log alone, without
     requiring the agent to have stored a date column in its memoryspace.
 
+    The metadata's per-message ``turn_idx`` is the position within
+    the chat session (i.e. the LME/BEAM dataset's own ``turn_idx``
+    column); the LogEntry's top-level ``turn_idx`` is the framework
+    turn this chat session is being ingested on.
+
     Returns the number of entries written this call.
     """
     session = getattr(env, "current_session", None)
     if not session:
         return 0
 
-    # Idempotency guard: skip if any chat_turn entry for this session
+    # Idempotency guard: skip if any chat_turn entry for this turn
     # already exists in the log (resume case, or accidental double-call).
     for e in log.entries:
-        if e.session_idx == session_idx and (e.metadata or {}).get("kind") == "chat_turn":
+        if e.turn_idx == turn_idx and (e.metadata or {}).get("kind") == "chat_turn":
             return 0
 
     meta = getattr(env, "current_session_meta", {}) or {}
@@ -173,8 +178,8 @@ def write_chat_turn_entries(log, env, session_idx: int) -> int:
             session_date_iso = None
 
     written = 0
-    for turn_idx, turn in enumerate(session):
-        md: dict[str, Any] = {"kind": "chat_turn", "turn_idx": turn_idx}
+    for chat_turn_idx, turn in enumerate(session):
+        md: dict[str, Any] = {"kind": "chat_turn", "turn_idx": chat_turn_idx}
         if session_date_raw is not None:
             md["session_date"] = str(session_date_raw)
         if session_date_iso is not None:
@@ -182,7 +187,7 @@ def write_chat_turn_entries(log, env, session_idx: int) -> int:
         if session_id is not None:
             md["session_id"] = str(session_id)
         log.append(LogEntry.make(
-            session_idx=session_idx,
+            turn_idx=turn_idx,
             role=str(turn.get("role", "user")),
             content=str(turn.get("content", "")),
             metadata=md,
@@ -201,13 +206,13 @@ def _make_today_session(agent) -> Callable[[], list[dict[str, Any]]]:
 
     def today_session() -> list[dict[str, Any]]:
         log = getattr(agent, "log", None)
-        today = getattr(agent, "_current_session", None)
+        today = getattr(agent, "_current_turn", None)
         if log is None or today is None:
             return []
         out: list[dict[str, Any]] = []
         for e in log.entries:
             md = e.metadata or {}
-            if e.session_idx == today and md.get("kind") == "chat_turn":
+            if e.turn_idx == today and md.get("kind") == "chat_turn":
                 out.append({
                     "role": e.role,
                     "content": e.content,
@@ -228,15 +233,19 @@ def make_chat_memory_namespace(state, agent=None) -> dict[str, Callable]:
     """Return the REPL namespace common to every chat-memory agent
     (LongMemEval, BEAM, …).
 
-    ``state`` is the framework :class:`ToolState` (used by
-    ``wait_for_next_day``). ``agent`` is the agent instance (used by
-    ``today_session`` to read chat_turn entries from the agent's log).
+    ``state`` is the framework :class:`ToolState`, unused here but
+    kept for API symmetry with per-env namespace builders. ``agent``
+    is the agent instance (used by ``today_session`` to read chat_turn
+    entries from the agent's log).
 
-    Also pre-binds a small stdlib surface (``re``, ``json``,
-    ``Counter``, ``defaultdict``, ``date``, ``timedelta``,
-    ``itertools``) so probe-time cells don't waste a turn on
-    ``import`` boilerplate. Anything else still needs an explicit
-    ``import`` — full stdlib access is intentional.
+    Pre-binds a small stdlib surface (``re``, ``json``, ``Counter``,
+    ``defaultdict``, ``date``, ``timedelta``, ``itertools``) so
+    probe-time cells don't waste a turn on ``import`` boilerplate.
+    Anything else still needs an explicit ``import`` — full stdlib
+    access is intentional.
+
+    Session termination: emit a response with no Python code block.
+    The CodeAct loop treats that as the end-of-session signal.
     """
     import re as _re
     import json as _json
@@ -245,7 +254,6 @@ def make_chat_memory_namespace(state, agent=None) -> dict[str, Callable]:
     from datetime import date as _date, timedelta as _timedelta
 
     ns: dict[str, Callable] = {
-        "wait_for_next_day": make_wait_for_next_day(state),
         "re": _re,
         "json": _json,
         "itertools": _itertools,

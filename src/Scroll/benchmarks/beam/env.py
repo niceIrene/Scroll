@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from Scroll.core import BaseEnvironment, SessionResult, EnvSnapshot
+from Scroll.core import BaseEnvironment, TurnResult, EnvSnapshot
 from Scroll.benchmarks.beam.catalog import BeamEnvConfig
 from Scroll.benchmarks.beam.dataset import BeamItem, load_chat, normalize_beam_date
 
@@ -29,10 +29,9 @@ RUN STRUCTURE — BEAM (Beyond a Million Tokens):
   temporal reasoning, abstention, contradiction resolution, event
   ordering, instruction following, preference following,
   summarization), so save anything you might want to recall.
-- After your bookkeeping (or choosing not to), call
-  ``wait_for_next_day()`` to advance to the next batch. The function
-  name is shared with the vending env's day-clock; in BEAM it just
-  advances the batch pointer.
+- After your bookkeeping (or choosing not to), emit a response with
+  NO ``python`` code block. The CodeAct loop treats that as the
+  end-of-batch signal and advances the batch pointer.
 - At the END of the run multiple probing questions fire in
   sequence; reply formatting rules will be in the probe-mode system
   prompt that swaps in then.
@@ -49,14 +48,26 @@ class BeamEnv(BaseEnvironment):
             )
         self.cfg = cfg
         self.seed = seed
-        self.session_idx = 0
+        self.turn_idx = 0
 
         self.item: BeamItem = load_chat(
             cfg.dataset_root, cfg.scale, cfg.chat_id,
         )
 
-        # ``days`` = num_batches + 1 probe day (matches LME's shape).
-        cfg.num_sessions = self.item.num_batches + 1
+        # Under the SCROLL-pure path
+        # (``cfg.agent_during_ingestion=False``, the default), every
+        # batch is bulk-loaded into ``E`` by :meth:`ingest_all` at
+        # task start and probes fire end-of-task — so ``num_turns =
+        # 0`` and the per-turn loop never runs.
+        #
+        # Under the legacy path (``cfg.agent_during_ingestion=True``):
+        # ``num_turns = num_batches + 1`` — one batch per iteration,
+        # plus a virtual ``+1`` probe-only turn. ``is_terminal``
+        # allows the +1 iteration through.
+        if cfg.agent_during_ingestion:
+            cfg.num_turns = self.item.num_batches + 1
+        else:
+            cfg.num_turns = 0
 
         self._current_batch_turns: list[dict] | None = None
         self._current_batch_idx: int | None = None
@@ -68,11 +79,11 @@ class BeamEnv(BaseEnvironment):
         _probes.set_active_item(self.item, cfg)
 
     # ------------------------------------------------------------------
-    # Per-day API
+    # Per-turn API
     # ------------------------------------------------------------------
 
-    def begin_session(self, session_idx: int) -> list[str]:
-        idx = session_idx  # 0-based into self.item.batches
+    def begin_turn(self, turn_idx: int) -> list[str]:
+        idx = turn_idx  # 0-based into self.item.batches
         if idx >= self.item.num_batches:
             self._current_batch_turns = None
             self._current_batch_idx = None
@@ -92,10 +103,10 @@ class BeamEnv(BaseEnvironment):
         self._today_logs = notes
         return list(notes)
 
-    def step_session(self) -> SessionResult:
-        self.session_idx += 1
-        return SessionResult(
-            session_idx=self.session_idx,
+    def step_turn(self) -> TurnResult:
+        self.turn_idx += 1
+        return TurnResult(
+            turn_idx=self.turn_idx,
             sold_units=0,
             revenue=0.0,
             machine_cash=0.0,
@@ -108,7 +119,7 @@ class BeamEnv(BaseEnvironment):
 
     def visible_state(self) -> dict:
         return {
-            "session_idx": self.session_idx,
+            "turn_idx": self.turn_idx,
             "num_batches": self.item.num_batches,
             "current_batch_idx": self._current_batch_idx,
             "current_time_anchor": self._current_time_anchor,
@@ -121,9 +132,31 @@ class BeamEnv(BaseEnvironment):
         }
 
     def is_terminal(self) -> bool:
-        # Allow exactly one iteration past the last batch for the probe
-        # day; becomes terminal after probes fire.
-        return self.session_idx > self.item.num_batches
+        # Legacy path (``agent_during_ingestion=True``): allow exactly
+        # one iteration past the last batch for the probe-only turn.
+        # SCROLL-pure path: num_turns is 0, so the per-turn loop
+        # never enters and this return is irrelevant.
+        return self.turn_idx > self.item.num_batches
+
+    # ------------------------------------------------------------------
+    # Task lifecycle — env exposes data only; BeamIngestor.bootstrap
+    # owns the env → E bulk-load step.
+    # ------------------------------------------------------------------
+
+    def get_end_of_task_probes(self):
+        """Return the chat's M probing questions, all fired at end-of-task.
+
+        Empty under the legacy ``agent_during_ingestion=True`` path —
+        probes still ride on the ``+1`` per-turn registry there.
+        """
+        if self.cfg.agent_during_ingestion:
+            return []
+        from Scroll.benchmarks.beam.tasks import probes as _probes
+        return list(_probes._active_probes)
+
+    def probe_isolation(self) -> str:
+        """Forwarded from :attr:`BeamEnvConfig.probe_isolation`."""
+        return str(getattr(self.cfg, "probe_isolation", "shared"))
 
     def substrate_endgame_prompt(self) -> str:
         return _BEAM_SUBSTRATE_ENDGAME
@@ -138,7 +171,7 @@ class BeamEnv(BaseEnvironment):
 
     def build_snapshot(self) -> EnvSnapshot:
         return EnvSnapshot(
-            session_idx=self.session_idx,
+            turn_idx=self.turn_idx,
             logs=list(self._today_logs),
             extra={
                 "scale": self.item.scale,
@@ -190,7 +223,7 @@ class BeamEnv(BaseEnvironment):
     # ------------------------------------------------------------------
 
     def to_checkpoint(self) -> dict:
-        return {"session_idx": self.session_idx,
+        return {"turn_idx": self.turn_idx,
             "seed": self.seed,
             "scale": self.item.scale,
             "chat_id": self.item.chat_id,
@@ -202,6 +235,7 @@ class BeamEnv(BaseEnvironment):
         cfg.scale = data["scale"]
         cfg.chat_id = data["chat_id"]
         env = cls(cfg, seed=data.get("seed", 0))
-        env.session_idx = data["session_idx"]
+        # ``session_idx`` is the legacy on-disk key for ``turn_idx``.
+        env.turn_idx = data.get("turn_idx", data.get("session_idx", 0))
         env._today_logs = list(data.get("today_logs") or [])
         return env

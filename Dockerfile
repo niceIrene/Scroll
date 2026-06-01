@@ -8,6 +8,6 @@ COPY pyproject.toml .
 COPY src/ src/
 COPY configs/ configs/
 
-RUN uv pip install --system -e ".[reme]"
+RUN uv pip install --system -e "."
 
 ENTRYPOINT ["Scroll"]

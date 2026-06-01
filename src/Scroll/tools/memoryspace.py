@@ -123,6 +123,27 @@ class Memoryspace:
         finally:
             self._catching_up = False
 
+    def bootstrap(self, env, log) -> None:
+        """Run the attached ingestor's bootstrap step.
+
+        Called once per task by the harness (``_run_task``) via
+        ``agent.bootstrap(env)`` → ``ScrollAgent.bootstrap`` → here.
+        Delegates to the attached ingestor's
+        :meth:`Ingestor.bootstrap` (default no-op), which is the
+        single place env-specific task-wide data ingestion lives
+        (LME haystack chat sessions, BEAM batches; vending is a
+        no-op).
+
+        Does NOT call ``consume`` — the appended entries are
+        materialized into ``W`` on the next ``ms`` read via lazy
+        ``_maybe_catch_up()``.
+
+        No-op when no ingestor is attached.
+        """
+        if self._ingestor is None:
+            return
+        self._ingestor.bootstrap(env, log)
+
     # ----- SQL -----
 
     def sql_exec(

@@ -10,7 +10,7 @@ A benchmark package must expose:
   - ``parse_env_config(raw_simulation_dict)``
   - ``create_agent(policy, cfg, log, data)``
   - a ``tasks`` submodule with ``PROBES`` and
-    ``get_probes_for_session(session_idx)``
+    ``get_probes_for_turn(turn_idx)``
 
 See :class:`Scroll.core.BaseEnvironment` for the runtime contract.
 """

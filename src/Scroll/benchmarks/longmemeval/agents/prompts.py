@@ -237,20 +237,14 @@ ms — memoryspace handle (read-only — see _STRATEGY_PROMPT):
       Bag-of-words cosine over auto-built vector index. Returns
       3-tuples — unpack, NOT dict.
 
-  ms.json_read(key) -> Any              # KeyError if missing
-  ms.json_list() -> list[str]
-  ms.file_read(name) -> str             # KeyError if missing
-  ms.file_list() -> dict[str, int]
-  ms.schema_inspect() -> dict           # schema is fixed; rarely needed
-
 ────────────────────────────────────────────────────────────────────
 log — LogHandle, unified event stream:
 
-  Each ``LogEntry`` has attrs ``e.session_idx``, ``e.role``,
-  ``e.content``, ``e.metadata`` (dict). ``e.session_idx`` is the
-  cross-env session counter. ``kind`` lives in
-  ``e.metadata.get('kind')``: {chat_turn, lm_turn, code, stdout,
-  rlm_call, rlm_result}.
+  Each ``LogEntry`` has attrs ``e.turn_idx`` (``e.session_idx`` is
+  an accepted alias), ``e.role``, ``e.content``,
+  ``e.metadata`` (dict). ``e.turn_idx`` is the cross-env turn
+  counter. ``kind`` lives in ``e.metadata.get('kind')``:
+  {chat_turn, lm_turn, code, stdout, rlm_call, rlm_result}.
 
   log.slice(session_idx=None, role=None, kind=None) -> list[LogEntry]
   log.range_by_session(start: int, end: int)        -> list[LogEntry]  # inclusive
@@ -546,37 +540,6 @@ shape instead, in two cells:
     Print all rows. Off-by-one almost always traces to a keyword
     miss in cell 1, not an enumeration error in cell 2.
 
-  cell 1.5 — DEDUP VIA rlm (REQUIRED when cell 1 returns ≥5 rows):
-    Many failures come from counting two mentions of the SAME real-world
-    item as two distinct things ("my new bike" + "the road bike I just
-    got" = same bike). SQL/Python can't judge same-instance semantically.
-    Hand the rows to rlm for a focused dedup pass:
-
-      body = "\\n\\n".join(
-          f"[sess {r['session_idx']} | {r['session_date_iso']}] "
-          f"U: {r['user_msg'][:300]}"
-          for r in rows
-      )
-      kept = await rlm(
-          query=(
-              "From the rows below, identify distinct real-world "
-              "<item_type> the user actually has/did. Two mentions are "
-              "the SAME instance if they describe the same physical/"
-              "conceptual thing across sessions (e.g. 'my new bike' "
-              "and 'the road bike I just got' = same bike). "
-              "Return a numbered list: each distinct item with "
-              "(a) one-line description, (b) first-seen session_idx, "
-              "(c) which sess rows refer to it. End with 'COUNT = N'."
-          ),
-          context=body,
-      )
-      print(kept)
-
-    Why rlm: dedup of "same real-world item across sessions" is a
-    semantic-judgment task over paragraph-length rows. rlm runs
-    30-60s for ~10 rows — budget for it; this is the primary use
-    case. Skip this cell ONLY if you have <5 rows (no dedup needed).
-
   cell 2 — ENUMERATE + SCOPE + DEDUP + COUNT (in Python, not SQL):
     Print each candidate as ONE line:
       ``[sess N] <one-line identifier>  <kept|dropped: reason>``
@@ -755,10 +718,15 @@ FINAL ANSWER SYNTHESIS — rules of evidence at commit time:
    Memories about different people/contexts are NOT conflicting.
 
 3. TIME-BOUNDED QUESTIONS. Compute the INCLUSIVE date window first
-   (use ``days_between``), then check every candidate's date. "Last
-   weekend" may mean up to 10 days ago. "Last month" includes
-   current month-to-date + previous month. If strict window yields
-   nothing, check the preceding period before abstaining.
+   (use ``days_between``), then check every candidate's date.
+
+   Time-phrase conventions:
+     - "last month" / "in March" = CALENDAR previous month / named month
+     - "past month" / "last N days/weeks" = ROLLING window from today
+     - "last weekend" = ROLLING up to 10 days ago
+
+   If strict window yields nothing, check the preceding period before
+   abstaining.
 
 4. TEMPORAL REFERENCE POINTS. "How many days ago did X when Y
    happened" = interval X→Y, NOT X→today.
@@ -958,5 +926,8 @@ _ABSTENTION_POSTSCRIPT = (
     "queries (different keywords AND different surfaces) return "
     "nothing useful, abstain EXPLICITLY using the phrasing: "
     "\"I don't have that information from our conversations.\" The "
-    "judge requires explicit refusal to score abstention correct."
+    "judge requires explicit refusal to score abstention correct. "
+    "A similar-but-different entity is NOT a match — 'table tennis' "
+    "≠ 'tennis', 'Sales Manager' ≠ 'Sales Engineer', 'Shinjuku' ≠ "
+    "'Harajuku'. Abstain rather than substitute the closest match."
 )

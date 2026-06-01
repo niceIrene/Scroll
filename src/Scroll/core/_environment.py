@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from Scroll.core._evaluation import EnvSnapshot, ProbeResult, ProbeSpec
-    from Scroll.core._models import SessionResult
+    from Scroll.core._models import TurnResult
 
 
 class BaseEnvironment(ABC):
@@ -18,13 +18,13 @@ class BaseEnvironment(ABC):
     (vending machine, chat-memory haystack, restaurant, etc.).
 
     The genuinely-required surface is small — three abstract methods
-    (``visible_state`` / ``step_session`` / ``build_snapshot``) and the
-    session counter. Everything else (``today_logs``, ``net_worth``,
-    ``begin_session``, prompts, probes) has sensible defaults so an env
+    (``visible_state`` / ``step_turn`` / ``build_snapshot``) and the
+    turn counter. Everything else (``today_logs``, ``net_worth``,
+    ``begin_turn``, prompts, probes) has sensible defaults so an env
     only implements what it actually needs.
     """
 
-    session_idx: int
+    turn_idx: int
 
     # ---------- required ----------
 
@@ -33,8 +33,8 @@ class BaseEnvironment(ABC):
         """Return the state visible to the agent (JSON-serializable)."""
 
     @abstractmethod
-    def step_session(self) -> SessionResult:
-        """Advance the simulation by one session. Returns the session's results."""
+    def step_turn(self) -> TurnResult:
+        """Advance the simulation by one turn. Returns the turn's results."""
 
     @abstractmethod
     def build_snapshot(self) -> EnvSnapshot:
@@ -44,10 +44,10 @@ class BaseEnvironment(ABC):
 
     def today_logs(self) -> list[str]:
         """Return outcome log lines describing what happened in the
-        just-completed session.
+        just-completed turn.
 
         Vending uses these to surface sales / delivery / fee events to
-        the agent's next-session prompt. Passive observation envs (chat-
+        the agent's next-turn prompt. Passive observation envs (chat-
         memory benchmarks) have no outcomes and inherit the default
         empty list.
         """
@@ -62,41 +62,63 @@ class BaseEnvironment(ABC):
         """
         return 0.0
 
-    def begin_session(self, session_idx: int) -> list[str]:
-        """Called at the start of each session. Returns context notes.
+    def begin_turn(self, turn_idx: int) -> list[str]:
+        """Called at the start of each turn. Returns context notes.
 
-        Override in subclasses to provide environment-driven per-session
+        Override in subclasses to provide environment-driven per-turn
         context. Default: no-op returning empty list.
         """
         return []
 
+    def get_end_of_task_probes(self) -> list[ProbeSpec]:
+        """Return probes that fire AFTER the last turn, not on a turn.
+
+        Default: empty. LME and BEAM override to fire their QA / probe
+        questions here under ``agent_during_ingestion=false``.
+        """
+        return []
+
+    def probe_isolation(self) -> str:
+        """How end-of-task probes are isolated from each other.
+
+        Two modes:
+
+        - ``"shared"`` (default): all probes share one agent session —
+          probe N sees probes 1..N-1's exchange in history. Cheap
+          (system prompt amortized) but minor in-context leak.
+        - ``"fresh"``: each probe (except the first) ends the current
+          agent session and starts a new one. The probe answers from
+          ``W`` only — the cleanest SCROLL-purity test. More LLM
+          cost (re-warmed system prompt per probe) and agents'
+          ``end_session`` / ``start_session`` subclass hooks fire
+          repeatedly, so they must be safe to call multiple times.
+
+        Only meaningful for envs whose ``get_end_of_task_probes``
+        returns ``len > 1`` — BEAM today (LME has a single probe,
+        so the mode is moot).
+        """
+        return "shared"
+
     def substrate_endgame_prompt(self) -> str:
-        """Per-env "RUN STRUCTURE" section appended to the substrate prompt.
+        """Per-env "RUN STRUCTURE" section prepended to the agent's
+        system prompt.
 
-        The core ``SUBSTRATE_PROMPT`` (in
-        ``Scroll.core._codeact_agent``) is intentionally
-        environment-neutral — it covers REPL mechanics, ``print``, and
-        error handling, but says nothing about what one session means,
-        what ``today`` is, or how a session ends. Each environment fills
-        in those rules here so the agent's mental model matches what the
-        framework actually does.
-
-        Default: empty string. Real envs (vending, longmemeval, beam)
-        override.
+        Each environment fills in what one turn means, what
+        ``today`` is, how a turn ends, and any env-specific
+        protocol notes. Default: empty string. Most envs now fold
+        this content directly into their agent's ``sys_prompt`` and
+        leave this default in place.
         """
         return ""
 
     def probe_substrate_prompt(self) -> str:
-        """Per-env probe-mode format rules.
+        """Per-env probe-mode format rules (legacy hook).
 
-        The core ``PROBE_SUBSTRATE_PROMPT`` covers what is universal
-        across envs (suspended end-session rules, lookup encouragement,
-        REPL semantics). Reply formatting — what an Answer line should
-        look like, what units the scorer expects, whether a
-        deterministic regex or an LLM judge consumes the reply — varies
-        by env and lives here.
-
-        Default: empty string.
+        Originally the place to spell out scorer-shaped reply rules
+        (Answer line, units, tolerances). Most envs now ride those
+        rules on :meth:`probe_user_postscript` instead — keep the
+        default empty string and the system prompt swap is never
+        exercised for new envs.
         """
         return ""
 
@@ -117,12 +139,12 @@ class BaseEnvironment(ABC):
         outer loop should exit early. Default: ``False``.
 
         Override for envs with a domain-specific failure mode (e.g.
-        vending bankruptcy after N consecutive negative-cash sessions).
+        vending bankruptcy after N consecutive negative-cash turns).
         """
         return False
 
-    def get_probes(self, session_idx: int) -> list[ProbeSpec]:
-        """Return probe questions scheduled for this session.
+    def get_probes(self, turn_idx: int) -> list[ProbeSpec]:
+        """Return probe questions scheduled for this turn.
 
         Override in subclasses. Default: no probes.
         """
@@ -171,8 +193,8 @@ class BaseEnvironment(ABC):
 class BaseDataSource(ABC):
     """Abstract external data source for an environment.
 
-    The only required method is :meth:`begin_session` (so the framework
-    can stage per-session input). The email + search channels have
+    The only required method is :meth:`begin_turn` (so the framework
+    can stage per-turn input). The email + search channels have
     no-op defaults — vending overrides them; chat-memory benchmarks
     leave them at the defaults.
     """
@@ -180,8 +202,8 @@ class BaseDataSource(ABC):
     # ---------- required ----------
 
     @abstractmethod
-    def begin_session(self, session_idx: int, env: BaseEnvironment) -> list[str]:
-        """Start a new session; return any notes/briefing for the agent."""
+    def begin_turn(self, turn_idx: int, env: BaseEnvironment) -> list[str]:
+        """Start a new turn; return any notes/briefing for the agent."""
 
     # ---------- optional channels (default: disabled) ----------
 
@@ -194,7 +216,7 @@ class BaseDataSource(ABC):
         to: str,
         subject: str,
         body: str,
-        session_idx: int,
+        turn_idx: int,
         env: BaseEnvironment,
     ) -> str:
         """Send an email and return the response/confirmation.

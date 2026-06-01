@@ -14,9 +14,17 @@ class LogEntry:
     The log mirrors the agent's chat turns (system prompt, user prompts,
     assistant responses, tool calls, tool results, compression summaries).
     Entries are append-only and persisted to conversation_log.jsonl.
+
+    ``turn_idx`` is which env time-slice this entry belongs to (vending
+    day, LME chat-session-during-ingest, BEAM batch-during-ingest, or
+    the framework turn number once the agent is in a session).
+    ``session_idx`` is exposed as a read-only property + accepted by
+    ``make()`` / ``from_dict()`` / dict-style access, because agent
+    prompts and REPL examples spell it that way; persisted JSONL logs
+    written under the old name also keep loading.
     """
 
-    session_idx: int
+    turn_idx: int
     ts: float
     role: str  # "system" | "user" | "assistant" | "tool"
     content: str = ""
@@ -24,18 +32,33 @@ class LogEntry:
     tool_result: dict | None = None  # {id, name, output}     when role="tool"
     metadata: dict = field(default_factory=dict)
 
+    @property
+    def session_idx(self) -> int:
+        """Alias for :attr:`turn_idx`.
+
+        Agent prompts and REPL examples spell ``e.session_idx``, so the
+        attribute name is part of the agent-facing contract.
+        """
+        return self.turn_idx
+
     @classmethod
     def make(
         cls,
-        session_idx: int,
-        role: str,
+        turn_idx: int | None = None,
+        role: str = "system",
         content: str = "",
         tool_call: dict | None = None,
         tool_result: dict | None = None,
         metadata: dict | None = None,
+        *,
+        session_idx: int | None = None,  # alias spelled by agent prompts
     ) -> "LogEntry":
+        if turn_idx is None:
+            if session_idx is None:
+                raise TypeError("LogEntry.make requires turn_idx (or session_idx alias)")
+            turn_idx = session_idx
         return cls(
-            session_idx=session_idx,
+            turn_idx=turn_idx,
             ts=time.time(),
             role=role,
             content=content,
@@ -46,7 +69,7 @@ class LogEntry:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "session_idx": self.session_idx,
+            "turn_idx": self.turn_idx,
             "ts": self.ts,
             "role": self.role,
             "content": self.content,
@@ -60,26 +83,37 @@ class LogEntry:
     # ``log.entries``), since the conversation_log.jsonl on disk is dicts
     # and the docs read like a record. Without these the agent gets
     # ``AttributeError: 'LogEntry' object has no attribute 'get'`` and
-    # has to retry. Mapping access mirrors :meth:`to_dict` keys.
+    # has to retry. Mapping access mirrors :meth:`to_dict` keys, plus
+    # ``"session_idx"`` (the name agent prompts spell) as an alias for
+    # ``"turn_idx"``.
     def get(self, key: str, default: Any = None) -> Any:
+        if key == "session_idx":
+            return self.turn_idx
         return self.to_dict().get(key, default)
 
     def __getitem__(self, key: str) -> Any:
+        if key == "session_idx":
+            return self.turn_idx
         try:
             return self.to_dict()[key]
         except KeyError as e:
             raise KeyError(
                 f"LogEntry has no field {key!r}; valid keys: "
-                f"session_idx, ts, role, content, tool_call, tool_result, metadata"
+                f"turn_idx, ts, role, content, tool_call, tool_result, metadata"
             ) from e
 
     def __contains__(self, key: str) -> bool:
-        return key in self.to_dict()
+        return key == "session_idx" or key in self.to_dict()
 
     @classmethod
     def from_dict(cls, d: dict) -> "LogEntry":
+        # Accept ``turn_idx`` or its legacy spelling ``session_idx``
+        # (older JSONL logs). One-of must be present.
+        raw = d.get("turn_idx")
+        if raw is None:
+            raw = d.get("session_idx", 0)
         return cls(
-            session_idx=int(d["session_idx"]),
+            turn_idx=int(raw),
             ts=float(d.get("ts", 0.0)),
             role=str(d.get("role", "system")),
             content=str(d.get("content", "")),
@@ -94,12 +128,12 @@ class BaseEnvConfig:
     """Cross-environment simulation config.
 
     Every env's own ``EnvConfig`` should expose at least these fields.
-    The benchmark loop only reads ``num_sessions``; subclass / wrapper
+    The benchmark loop only reads ``num_turns``; subclass / wrapper
     dataclasses add env-specific knobs (vending: machine_slots,
     lead_time_days; future envs: max_turns, domain, etc.).
     """
 
-    num_sessions: int = 30
+    num_turns: int = 30
 
     @classmethod
     def from_dict(cls, d: dict) -> "BaseEnvConfig":
@@ -156,42 +190,24 @@ class AgentConfig:
     # migration.
     substrate: str = "codeact_rlm"
 
-    # X = f(E) memory mode. When None, uses the agent class's `memory_mode`
-    # default. JSON configs only set this to override the class default.
-    # Recognized values: "step" | "sliding". "step" wipes the LM history
-    # per session and relies on REPL globals for within-session
-    # continuity. "sliding" keeps history across sessions and trims
-    # oldest turns when over the context budget — the passive
-    # `f = mem(E)` baseline.
-    memory_mode: str | None = None
-
-    # Cross-task memoryspace persistence. Path to a JSON file shared across
-    # multiple independent task runs (e.g. LongMemEval's per-QA sub-runs
-    # under one orchestrator invocation). When set, ``CodeActAgent``
-    # subclasses that opt in via ``shared_memoryspace_keys`` will load
-    # selected memoryspace JSON keys at agent init and write them back at
-    # session end, with file locking for parallel-safe access.
-    shared_memoryspace_path: str | None = None
-
     # When False, ``LongMemEvalAgent._on_probe_complete`` early-returns
     # instead of distilling new procedural hints. Set to False when
     # running a weaker model with a pre-baked playbook (or hints from
     # a stronger model) — we want the model to READ the curated
-    # guidance but NOT pollute the shared store with its own
+    # guidance but NOT pollute the local store with its own
     # (lower-quality) distillations.
     enable_distillation: bool = True
 
     # When False, ``LongMemEvalAgent.probe_user_hint`` skips appending
     # the ``DISTILLED PLAYBOOK`` static block to the probe prompt. Set
     # to False for A/B variants that consume raw procedural_hints from
-    # the shared memoryspace instead of (or in addition to) the curated
+    # the per-task memoryspace instead of (or in addition to) the curated
     # playbook.
     enable_playbook: bool = True
 
     # Per-run override of ``LongMemEvalAgent.procedural_hints_in_prompt``
-    # (default 5 from the class attr). When None, the class default
-    # is used. Set higher for runs where the shared memoryspace is
-    # pre-seeded from a strong-model run with rich hints per qtype.
+    # (default 5 from the class attr). When None, the class default is
+    # used.
     procedural_hints_in_prompt: int | None = None
 
 
@@ -214,16 +230,16 @@ class AgentConfig:
 class Event:
     """A timestamped event in the simulation."""
 
-    session_idx: int
+    turn_idx: int
     kind: str
     text: str
 
 
 @dataclass
-class SessionResult:
-    """Results from stepping the environment forward one session."""
+class TurnResult:
+    """Results from stepping the environment forward one turn."""
 
-    session_idx: int
+    turn_idx: int
     sold_units: int
     revenue: float
     machine_cash: float
@@ -234,7 +250,7 @@ class SessionResult:
 class RunStats:
     """Aggregate results from a single benchmark run.
 
-    Only ``strategy`` / ``seed`` / ``active_sessions`` / ``probe_avg_score``
+    Only ``strategy`` / ``seed`` / ``active_turns`` / ``probe_avg_score``
     / ``efficiency`` are env-agnostic. Env-specific headline metrics
     (vending's ``net_worth`` / ``units_sold`` / ``bankrupt``) live in
     ``env_metrics``, populated by :meth:`BaseEnvironment.report_run_metrics`.
@@ -242,7 +258,7 @@ class RunStats:
 
     strategy: str
     seed: int
-    active_sessions: int = 0
+    active_turns: int = 0
     probe_avg_score: float = 0.0
     efficiency: dict = field(default_factory=dict)
     env_metrics: dict = field(default_factory=dict)

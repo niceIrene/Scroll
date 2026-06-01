@@ -1,8 +1,7 @@
 """Vending machine environment package."""
 
-from Scroll.benchmarks.vending.env import VendingEnv, default_catalog
+from Scroll.benchmarks.vending.env import VendingEnv, default_catalog, Product, EnvConfig
 from Scroll.benchmarks.vending.datasource import DataSourceManager
-from Scroll.benchmarks.vending.catalog import Product, EnvConfig
 from Scroll.benchmarks.vending.agents import create_agent
 
 ENV_ID = "vending"

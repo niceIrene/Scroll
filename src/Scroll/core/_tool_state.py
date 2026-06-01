@@ -1,7 +1,7 @@
 """Harness bookkeeping: ``ToolState`` and the ``ToolResponse`` helper.
 
-Tracks per-session counters, action log, and accumulated LM usage
-across the agent's session-loop calls. Lives in ``core/`` because
+Tracks per-turn counters, action log, and accumulated LM usage
+across the agent's turn-loop calls. Lives in ``core/`` because
 it's harness state, not an agent-facing data surface. The legacy
 env-side closures (in ``vending/tools.py``) still return AgentScope
 ``ToolResponse`` objects internally; the namespace builder unwraps
@@ -40,9 +40,8 @@ def _truncate(text: str, limit: int = MAX_RESULT_CHARS) -> str:
 def _resp(text: str, *, interrupted: bool = False):
     """Wrap ``text`` in an AgentScope ``ToolResponse``.
 
-    Legacy tool closures (in ``vending/tools.py`` and
-    ``tools/sql_tools.py``) still return ``ToolResponse`` for
-    backward-compatibility with any non-substrate caller. The REPL
+    Tool closures (in ``vending/tools.py`` and ``tools/sql_tools.py``)
+    return ``ToolResponse`` for non-substrate callers; the REPL
     namespace builder unwraps it back to ``str`` for the agent.
     """
     _ensure_imports()
@@ -72,32 +71,29 @@ class ToolState:
     data: object | None = None
     cfg: object | None = None
 
-    # Session lifecycle
-    _session_ended: bool = False
+    # Turn lifecycle
+    _turn_ended: bool = False
     _message_count: int = 0
     _action_log: list[str] = field(default_factory=list)
     _sub_agent_log: list[str] = field(default_factory=list)
 
     # Token + LM-call accounting (lifetime, persisted in checkpoint).
     # Populated via ``_record_lm_usage`` from the model wrapper —
-    # captures BOTH session-loop / probe-time agent calls AND rlm
+    # captures BOTH turn-loop / probe-time agent calls AND rlm
     # calls (they share the same wrapped model object).
     _lm_calls: int = 0
     _prompt_tokens: int = 0
     _completion_tokens: int = 0
 
-    def reset_session(self) -> None:
-        """Reset per-session transient state (called at start of each session).
+    def reset_turn(self) -> None:
+        """Reset per-turn transient state (called at start of each turn).
 
         ``_message_count`` and the LM-token counters survive — they're
         lifetime budget / cost counters.
         """
-        self._session_ended = False
+        self._turn_ended = False
         self._action_log = []
         self._sub_agent_log = []
-
-    # Back-compat alias for callers that still use the old name.
-    reset_day = reset_session
 
     def _tick(self) -> None:
         self._message_count += 1

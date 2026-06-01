@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Orchestrate parallel Docker-based benchmark runs.
+"""Orchestrate parallel Docker-based Vending benchmark runs.
+
+Sweeps (config, seed) pairs across Docker containers and aggregates
+the resulting ``run_result.json`` files by policy (mean / min
+``net_worth``, ``units_sold``, ``active_sessions``). The aggregator
+is Vending-specific; for LongMemEval use ``scripts/run_longmemeval.py``
+instead (subprocess-based, with its own per-question_type aggregation).
 
 Usage:
-    python scripts/run_parallel.py \
-        --configs configs/longmemeval/scroll_s.json \
+    python scripts/run_vending.py \
+        --configs configs/vending/scroll.json \
         --seeds 1 2 3 \
         --max-parallel 4
 """
@@ -39,6 +45,7 @@ def _run_container(
     output_root: str,
     env_vars: dict[str, str],
     fresh: bool,
+    checkpoint: bool,
     tracing_url: str | None = None,
 ) -> tuple[str, int, str]:
     """Launch a single Docker container for one (config, seed) run."""
@@ -66,6 +73,8 @@ def _run_container(
     ]
     if fresh:
         cmd.append("--fresh")
+    if not checkpoint:
+        cmd.append("--no-checkpoint")
     if tracing_url:
         cmd += ["--tracing-url", tracing_url]
 
@@ -109,7 +118,7 @@ def _aggregate_results(output_dirs: list[str]) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run Scroll benchmark agents in parallel via Docker."
+        description="Run Vending benchmark agents in parallel via Docker."
     )
     parser.add_argument(
         "--configs", nargs="+", required=True,
@@ -132,8 +141,16 @@ def main() -> None:
         help="Max containers to run simultaneously (default: 4).",
     )
     parser.add_argument(
-        "--fresh", action="store_true",
-        help="Pass --fresh to each container (ignore checkpoints).",
+        "--fresh", action=argparse.BooleanOptionalAction, default=True,
+        help="Pass --fresh to each container (ignore existing "
+             "checkpoints, start from session 1). Default: ON. "
+             "Use --no-fresh to resume from a checkpoint.",
+    )
+    parser.add_argument(
+        "--checkpoint", action=argparse.BooleanOptionalAction, default=False,
+        help="Write checkpoints during the run (passes --checkpoint "
+             "behavior; absence passes --no-checkpoint). Default: OFF. "
+             "Use --checkpoint to enable checkpoint writing.",
     )
     parser.add_argument(
         "--tracing-url",
@@ -152,9 +169,19 @@ def main() -> None:
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
-    # Collect API keys from host environment
+    # Collect API keys from host environment. Forward both US + CN
+    # DashScope keys (configs/vending/scroll.json points at CN; older
+    # configs and the LME judge default to US), OPENAI_API_KEY, and
+    # ANTHROPIC_API_KEY so the container can resolve whichever
+    # ``qwen_api_key_env`` / ``judge_api_key_env`` the config picks.
     env_vars = {}
-    for key in ["US_DASHSCOPE_API_KEY", "US_DASHSCOPE_BASE_URL"]:
+    for key in [
+        "US_DASHSCOPE_API_KEY", "US_DASHSCOPE_BASE_URL",
+        "CN_DASHSCOPE_API_KEY", "CN_DASHSCOPE_BASE_URL",
+        "DASHSCOPE_API_KEY",
+        "OPENAI_API_KEY", "OPENAI_BASE_URL",
+        "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+    ]:
         val = os.environ.get(key)
         if val:
             env_vars[key] = val
@@ -175,7 +202,7 @@ def main() -> None:
             pool.submit(
                 _run_container, cfg_path, seed,
                 args.image, args.output, env_vars, args.fresh,
-                args.tracing_url,
+                args.checkpoint, args.tracing_url,
             ): (cfg_path, seed)
             for cfg_path, seed in runs
         }

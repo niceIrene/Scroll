@@ -18,7 +18,7 @@ They are NOT called by the LLM. Two call sites populate ``D``:
 
   - **Action ingest** — :func:`ingest_orders`, :func:`ingest_finances`,
     :func:`ingest_inventory` fire as tap-around hooks inside
-    :func:`vending.agents._namespace.make_env_namespace_with_db_ingest`,
+    :func:`vending.agents.agent._make_env_namespace`,
     so D reflects agent-driven state changes (sending an order email,
     polling money balance, asking sub-agent to check inventory) the
     same turn they happen.

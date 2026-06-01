@@ -45,13 +45,13 @@ class DataSourceManager(BaseDataSource):
             "operations_guide: restock the machine daily — empty slots earn nothing while the daily operating fee still applies",
         ]
 
-    def begin_session(self, session_idx: int, env: VendingEnv) -> list[str]:
+    def begin_turn(self, turn_idx: int, env: VendingEnv) -> list[str]:
         self._daily_context = []
-        self._run_scheduled(session_idx, env)
+        self._run_scheduled(turn_idx, env)
         if self.cfg.get("enable_weather_news", True):
             weather = self.rng.choice(["sunny", "cloudy", "rainy"])
             footfall = self.rng.choice(["low", "normal", "high"])
-            weather_note = f"weather_feed session={session_idx} weather={weather} footfall={footfall}"
+            weather_note = f"weather_feed day={turn_idx} weather={weather} footfall={footfall}"
             news_note = self.rng.choice(
                 [
                     "news_feed: convenience trend stable",
@@ -119,7 +119,7 @@ class DataSourceManager(BaseDataSource):
             return "sub_agent_report: no actions yet"
         return f"sub_agent_report: last_action={self._sub_agent_log[-1]}"
 
-    def send_email(self, to: str, subject: str, body: str, session_idx: int, env: VendingEnv) -> str:
+    def send_email(self, to: str, subject: str, body: str, turn_idx: int, env: VendingEnv) -> str:
         if not self.cfg.get("enable_email", True):
             return f"email_disabled fallback_no_send to={to}"
         record = f"sent_email to={to} subject={subject}"
@@ -134,7 +134,7 @@ class DataSourceManager(BaseDataSource):
             catalog = self._supplier_emails[to]
             price_lines = ", ".join(f"{sku}: ${cost:.2f}/unit" for sku, cost in catalog.items())
             reply = f"Thank you for your inquiry. Here are our current prices: {price_lines}. To place an order, reply with subject containing 'order' and list items as sku=quantity in the body (e.g. cola=20 water=15)."
-            self._scheduled.append((session_idx + 1, "mail_reply", {"from": to, "subject": "Re: Price List", "body": reply}))
+            self._scheduled.append((turn_idx + 1, "mail_reply", {"from": to, "subject": "Re: Price List", "body": reply}))
         is_order = any(
             kw in subject_l or kw in body_l
             for kw in ("order", "purchase", "buy")
@@ -147,26 +147,26 @@ class DataSourceManager(BaseDataSource):
             if rejected_items:
                 self.inbox.append(
                     Mail(
-                        day=session_idx,
+                        day=turn_idx,
                         source=to,
                         subject="Order partially rejected",
                         body=f"items_not_carried={rejected_items} available={list(supplier_catalog.keys())}",
                     )
                 )
             if valid_items:
-                self._scheduled.append((session_idx + 1, "supplier_order", {"from": to, "items": valid_items}))
+                self._scheduled.append((turn_idx + 1, "supplier_order", {"from": to, "items": valid_items}))
         return record
 
-    def _run_scheduled(self, session_idx: int, env: VendingEnv) -> None:
+    def _run_scheduled(self, turn_idx: int, env: VendingEnv) -> None:
         keep: list[tuple[int, str, dict]] = []
         for due_day, kind, payload in self._scheduled:
-            if due_day > session_idx:
+            if due_day > turn_idx:
                 keep.append((due_day, kind, payload))
                 continue
             if kind == "mail_reply":
                 self.inbox.append(
                     Mail(
-                        day=session_idx,
+                        day=turn_idx,
                         source=payload["from"],
                         subject=payload["subject"],
                         body=payload["body"],
@@ -176,7 +176,7 @@ class DataSourceManager(BaseDataSource):
                 outcome = env.order(payload["items"])
                 self.inbox.append(
                     Mail(
-                        day=session_idx,
+                        day=turn_idx,
                         source=payload["from"],
                         subject="Order confirmation",
                         body=f"order_result={outcome} items={payload['items']}",

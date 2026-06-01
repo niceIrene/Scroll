@@ -34,7 +34,7 @@ class ProbeToolCall:
 class ProbeResult:
     """Result of injecting a single probe question."""
 
-    session_idx: int
+    turn_idx: int
     question_id: str
     question: str
     agent_answer: str
@@ -45,7 +45,7 @@ class ProbeResult:
     # Probe-only LM cost — diffed from the agent's lifetime usage
     # counter (``ToolState._lm_calls`` / ``_prompt_tokens`` /
     # ``_completion_tokens``) across the probe call boundary.
-    # Lets reports separate "probe cost" from "session-loop cost" cleanly.
+    # Lets reports separate "probe cost" from "turn-loop cost" cleanly.
     probe_lm_calls: int = 0
     probe_prompt_tokens: int = 0
     probe_completion_tokens: int = 0
@@ -53,16 +53,16 @@ class ProbeResult:
 
 @dataclass
 class EnvSnapshot:
-    """Lightweight per-session snapshot kept by the benchmark loop.
+    """Lightweight per-turn snapshot kept by the benchmark loop.
 
-    Env-agnostic core (``session_idx``, ``logs``, ``extra``). Concrete envs
+    Env-agnostic core (``turn_idx``, ``logs``, ``extra``). Concrete envs
     may subclass to add typed fields (e.g. :class:`VendingSnapshot`); other
-    envs populate ``extra`` directly. The session-log serializer dumps
+    envs populate ``extra`` directly. The turn-log serializer dumps
     every field via :func:`dataclasses.asdict`, so subclass fields and
     ``extra`` flow through automatically.
     """
 
-    session_idx: int
+    turn_idx: int
     logs: list[str] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
 
@@ -79,7 +79,7 @@ class ProbeSpec:
     """
 
     question_id: str
-    session_idx: int
+    turn_idx: int
     question: str
     ground_truth_fn: Callable[[list[EnvSnapshot], Any], str]
     scoring_fn: Callable[[str, str], float]
@@ -158,7 +158,7 @@ def inject_probe(
                 "probe.passive": True,
             })
             return ProbeResult(
-                session_idx=probe.session_idx,
+                turn_idx=probe.turn_idx,
                 question_id=probe.question_id,
                 question=probe.question,
                 agent_answer="",
@@ -168,33 +168,28 @@ def inject_probe(
                 tool_trace=[],
             )
 
-        # Equalize visibility across agents: the session-loop fires probes
-        # after ``env.step_session()`` but any outcome logs the env
+        # Equalize visibility across agents: the turn-loop fires probes
+        # after ``env.step_turn()`` but any outcome logs the env
         # produced (env-specific — for vending: sales / deliveries /
         # fees; chat-memory envs typically have none) are only buffered
-        # in ``_pending_env_outcomes`` for the next session's prompt.
+        # in ``_pending_env_outcomes`` for the next turn's prompt.
         # Surface them to log-based agents here so the GT's window
-        # (which includes session N) is answerable regardless of whether
-        # the agent has already auto-ingested the session.
+        # (which includes turn N) is answerable regardless of whether
+        # the agent has already auto-ingested the turn.
         outcomes_block = ""
         pending = getattr(agent, "_pending_env_outcomes", None)
         if pending:
             outcomes_lines = "\n".join(f"  - {line}" for line in pending)
             outcomes_block = (
-                f"Events from end of session {probe.session_idx} "
+                f"Events from end of turn {probe.turn_idx} "
                 f"(just completed; these are within this probe's "
                 f"reporting window):\n{outcomes_lines}\n\n"
             )
 
-        # Probe-mode rules (plain-text reply, no wait_for_next_day, no
-        # print-wrapped answers, REPL semantics) live in the universal
-        # PROBE_SUBSTRATE_PROMPT, plus a per-env "PROBE FORMAT" block
-        # supplied by ``BaseEnvironment.probe_substrate_prompt`` (e.g.
-        # vending's deterministic-regex format vs. LME's lenient
-        # judge format) — both are spliced into the system prompt by
-        # ``CodeActAgent._probe_sys_prompt``. The env can also append
-        # a short, scorer-shaped reminder NEXT TO the question text
-        # via ``probe_user_postscript`` — picked up here.
+        # Per-env probe-format reminders ride on the user-message
+        # postscript (``BaseEnvironment.probe_user_postscript``) so
+        # they sit RIGHT NEXT TO the question text where the model's
+        # instruction-following attention is highest.
         env = (
             getattr(agent, "_tool_state", None)
             and agent._tool_state.env
@@ -326,7 +321,7 @@ def inject_probe(
         })
 
         return ProbeResult(
-            session_idx=probe.session_idx,
+            turn_idx=probe.turn_idx,
             question_id=probe.question_id,
             question=probe.question,
             agent_answer=agent_answer,

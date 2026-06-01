@@ -34,16 +34,20 @@ from Scroll.log import ConversationLog
 _tracer = otel_trace.get_tracer(__name__)
 
 
-def _append_session_log(output_dir, session_idx, ds_notes, actions, env_logs, snapshot):
-    """Append one session's full log record to session_logs.jsonl."""
+def _append_turn_log(output_dir, turn_idx, ds_notes, actions, env_logs, snapshot):
+    """Append one turn's full log record to session_logs.jsonl.
+
+    Filename kept as ``session_logs.jsonl`` so existing run output
+    directories stay readable. The record's index field is ``turn_idx``.
+    """
     path = Path(output_dir) / "session_logs.jsonl"
     snap = asdict(snapshot)
-    # ``snap["session_idx"]`` is redundant with the top-level field and ``logs``
+    # ``snap["turn_idx"]`` is redundant with the top-level field and ``logs``
     # is already in ``env_logs``; drop both from the snapshot block.
-    snap.pop("session_idx", None)
+    snap.pop("turn_idx", None)
     snap.pop("logs", None)
     record = {
-        "session_idx": session_idx,
+        "turn_idx": turn_idx,
         "datasource_notes": ds_notes,
         "agent_actions": actions,
         "env_logs": env_logs,
@@ -53,8 +57,8 @@ def _append_session_log(output_dir, session_idx, ds_notes, actions, env_logs, sn
         f.write(json.dumps(record, default=str) + "\n")
 
 
-def _truncate_session_log(output_dir, resume_session):
-    """On resume, remove log entries past the checkpoint session to avoid duplicates."""
+def _truncate_turn_log(output_dir, resume_turn):
+    """On resume, remove log entries past the checkpoint turn to avoid duplicates."""
     path = Path(output_dir) / "session_logs.jsonl"
     if not path.exists():
         return
@@ -63,12 +67,12 @@ def _truncate_session_log(output_dir, resume_session):
         if not line.strip():
             continue
         entry = json.loads(line)
-        if entry["session_idx"] <= resume_session:
+        if entry["turn_idx"] <= resume_turn:
             kept.append(line)
     path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
 
 
-def _run_session_loop(
+def _run_task(
     env,
     agent,
     data,
@@ -79,83 +83,137 @@ def _run_session_loop(
     seed: int,
     snapshots: list[EnvSnapshot],
     probe_results: list[ProbeResult],
-    per_session_action_logs: list[list[str]],
-    get_probes_for_session: Callable[[int], list[ProbeSpec]] = lambda s: [],
+    per_turn_action_logs: list[list[str]],
+    get_probes_for_turn: Callable[[int], list[ProbeSpec]] = lambda s: [],
     checkpoint: bool = True,
     output_dir: str | None = None,
     cfg_hash: str = "",
 ) -> int:
-    """Session-count based loop. Returns active_sessions."""
-    active_sessions = 0
+    """Drive one task end-to-end. Returns active_turns.
+
+    Task shape:
+      1. ``agent.bootstrap(env)`` once — delegates to the ingestor's
+         ``bootstrap(env, log)``, which writes env's task-wide data
+         (LME haystack chat sessions, BEAM batches) into ``E``.
+         Vending's ingestor inherits the default no-op.
+      2. ``agent.start_session()`` once — per-instance setup hook.
+      3. Per-turn loop (``num_turns`` iterations or until
+         ``env.is_terminal()``): begin_turn / receive_context /
+         run_turn / step_turn / receive_outcomes / per-turn probes /
+         checkpoint.
+      4. ``env.get_end_of_task_probes()`` after the loop completes —
+         for envs that fire probes once at task end (LME, BEAM)
+         rather than scheduled on a turn. Under ``probe_isolation
+         ="fresh"`` (BEAM), each probe past the first cycles
+         end_session/start_session — bootstrap is NOT re-run.
+      5. ``agent.end_session()`` in ``finally`` — per-instance
+         teardown.
+
+    ``bootstrap`` / ``start_session`` / ``end_session`` /
+    ``get_end_of_task_probes`` all default to no-op / empty; vending
+    uses only the per-turn loop body, LME/BEAM use bootstrap +
+    end-of-task probes with a zero-iteration turn loop.
+    """
+    agent.bootstrap(env)
+    agent.start_session()
+    active_turns = 0
     try:
-     for _ in range(env_cfg.num_sessions):
-      with _tracer.start_as_current_span(f"session.{env.session_idx + 1}") as session_span:
-        if is_llm:
-            print(
-                f"\r  [{policy}] seed={seed} session {env.session_idx + 1}/{env_cfg.num_sessions} ...",
-                end="",
-                flush=True,
-            )
-        ds_notes = data.begin_session(env.session_idx, env)
-        agent.receive_context(env.session_idx, ds_notes)
+        try:
+            for _ in range(env_cfg.num_turns):
+                with _tracer.start_as_current_span(f"turn.{env.turn_idx + 1}") as turn_span:
+                    if is_llm:
+                        print(
+                            f"\r  [{policy}] seed={seed} turn {env.turn_idx + 1}/{env_cfg.num_turns} ...",
+                            end="",
+                            flush=True,
+                        )
+                    ds_notes = data.begin_turn(env.turn_idx, env)
+                    agent.receive_context(env.turn_idx, ds_notes)
 
-        with _tracer.start_as_current_span("agent.run_session"):
-            actions = agent.run_session(env)
+                    with _tracer.start_as_current_span("agent.run_turn"):
+                        actions = agent.run_turn(env)
 
-        per_session_action_logs.append(list(actions))
+                    per_turn_action_logs.append(list(actions))
 
-        with _tracer.start_as_current_span("env.step_session") as env_span:
-            session_res = env.step_session()
-            env_span.set_attributes({
-                "env.revenue": round(session_res.revenue, 2),
-                "env.units_sold": session_res.sold_units,
-            })
-        logs = env.today_logs()
-        agent.receive_outcomes(session_res.session_idx, logs)
+                    with _tracer.start_as_current_span("env.step_turn") as env_span:
+                        turn_res = env.step_turn()
+                        env_span.set_attributes({
+                            "env.revenue": round(turn_res.revenue, 2),
+                            "env.units_sold": turn_res.sold_units,
+                        })
+                    logs = env.today_logs()
+                    agent.receive_outcomes(turn_res.turn_idx, logs)
 
-        snapshots.append(env.build_snapshot())
+                    snapshots.append(env.build_snapshot())
 
-        # Persist full per-session log for debugging / querying
-        if output_dir:
-            _append_session_log(
-                output_dir, session_res.session_idx, ds_notes, actions, logs, snapshots[-1],
-            )
+                    # Persist full per-turn log for debugging / querying
+                    if output_dir:
+                        _append_turn_log(
+                            output_dir, turn_res.turn_idx, ds_notes, actions, logs, snapshots[-1],
+                        )
 
-        # Inject probes if scheduled for this session
-        probes = get_probes_for_session(session_res.session_idx)
-        if probes and is_llm:
-            for probe in probes:
-                result = inject_probe(agent, probe, snapshots, data)
-                probe_results.append(result)
+                    # Inject probes if scheduled for this turn
+                    probes = get_probes_for_turn(turn_res.turn_idx)
+                    if probes and is_llm:
+                        for probe in probes:
+                            result = inject_probe(agent, probe, snapshots, data)
+                            probe_results.append(result)
 
-        if session_res.sold_units > 0:
-            active_sessions += 1
+                    if turn_res.sold_units > 0:
+                        active_turns += 1
 
-        session_span.set_attributes({
-            "session.number": session_res.session_idx,
-            "session.revenue": round(session_res.revenue, 2),
-            "session.units_sold": session_res.sold_units,
-            "session.cash": round(session_res.cash, 2),
-            "session.net_worth": round(env.net_worth(), 2),
-        })
+                    turn_span.set_attributes({
+                        "turn.number": turn_res.turn_idx,
+                        "turn.revenue": round(turn_res.revenue, 2),
+                        "turn.units_sold": turn_res.sold_units,
+                        "turn.cash": round(turn_res.cash, 2),
+                        "turn.net_worth": round(env.net_worth(), 2),
+                    })
 
-        # Save checkpoint after each session
-        if checkpoint and output_dir:
-            loop_state = {
-                "active_sessions": active_sessions,
-                "loop_type": "session",
-            }
-            save_checkpoint(
-                output_dir, session_res.session_idx, env, data, agent, log,
-                loop_state, policy, seed, cfg_hash,
-            )
+                    # Save checkpoint after each turn
+                    if checkpoint and output_dir:
+                        loop_state = {
+                            "active_turns": active_turns,
+                            "loop_type": "turn",
+                        }
+                        save_checkpoint(
+                            output_dir, turn_res.turn_idx, env, data, agent, log,
+                            loop_state, policy, seed, cfg_hash,
+                        )
 
-        if env.is_terminal():
-            break
-    except KeyboardInterrupt:
-        print("\nInterrupted — checkpoint already saved for last completed session.")
-        raise
-    return active_sessions
+                    if env.is_terminal():
+                        break
+
+            # Turn loop completed (no interrupt). Fire any end-of-task
+            # probes. Empty by default; LME / BEAM override
+            # ``env.get_end_of_task_probes`` to fire their QA / probe
+            # questions here under ``agent_during_ingestion=false``.
+            eot_probes = env.get_end_of_task_probes()
+            if eot_probes and is_llm:
+                # ``env.probe_isolation()`` chooses between ``"shared"``
+                # (all probes in one agent session — cheap) and
+                # ``"fresh"`` (each probe past the first ends the
+                # current session and starts a new one — SCROLL-purity
+                # test, more LLM cost).
+                isolation = env.probe_isolation()
+                with _tracer.start_as_current_span("end_of_task_probes"):
+                    for i, probe in enumerate(eot_probes):
+                        if isolation == "fresh" and i > 0:
+                            agent.end_session()
+                            agent.start_session()
+                        result = inject_probe(agent, probe, snapshots, data)
+                        probe_results.append(result)
+        except KeyboardInterrupt:
+            print("\nInterrupted — checkpoint already saved for last completed turn.")
+            raise
+    finally:
+        # ``end_session`` always fires — even on interrupt — so
+        # subclasses can flush per-instance state (distilled hints to
+        # cross-task store, etc.) without leaking on Ctrl+C.
+        agent.end_session()
+    return active_turns
+
+
 
 
 def run_single(
@@ -167,6 +225,7 @@ def run_single(
     checkpoint: bool = True,
     output_dir: str | None = None,
     env_id: str = "longmemeval",
+    keep_logs: bool = True,
 ) -> RunStats:
     policy = agent_cfg.policy
     # Root span name mirrors the on-disk layout but always includes the
@@ -184,7 +243,7 @@ def run_single(
         _t0 = time.perf_counter()
         stats = _run_single_inner(
             run_span, seed, env_cfg, agent_cfg, data_cfg,
-            fresh, checkpoint, output_dir, env_id,
+            fresh, checkpoint, output_dir, env_id, keep_logs,
         )
         wall_seconds = round(time.perf_counter() - _t0, 2)
         # Surface end-to-end per-QA wall time as part of efficiency so
@@ -226,6 +285,7 @@ def _run_single_inner(
     checkpoint: bool,
     output_dir: str | None,
     env_id: str,
+    keep_logs: bool = True,
 ) -> RunStats:
     policy = agent_cfg.policy
     run_span.set_attributes({
@@ -246,17 +306,25 @@ def _run_single_inner(
     }
     cfg_hash = config_hash(cfg_dict)
 
-    jsonl_path = Path(output_dir) / "conversation_log.jsonl" if output_dir else None
+    # ``conversation_log.jsonl`` is the full E (event log). It's only
+    # needed for offline ``Scroll rebuild-w`` / trace inspection — at
+    # 500-QA × 500-session-M scale it eats ~100GB+ of disk. Gate on
+    # ``keep_logs`` (default True for backward compat; orchestrator
+    # disables by default via --no-checkpoint).
+    jsonl_path = (
+        Path(output_dir) / "conversation_log.jsonl"
+        if (output_dir and keep_logs) else None
+    )
 
     # Try to resume from checkpoint
     resumed = False
-    resume_active_sessions = 0
+    resume_active_turns = 0
 
     if not fresh and output_dir:
         ckpt = load_checkpoint(output_dir, policy, seed, cfg_hash)
         if ckpt:
-            resume_session = ckpt["_meta"]["session_idx"]
-            print(f"  Resuming from checkpoint at session {resume_session}...")
+            resume_turn = ckpt["_meta"]["turn_idx"]
+            print(f"  Resuming from checkpoint at turn {resume_turn}...")
 
             env = entry.env_cls.from_checkpoint(ckpt["env"], env_cfg)
             data = entry.datasource_cls(seed=seed, data_cfg=data_cfg)
@@ -270,14 +338,12 @@ def _run_single_inner(
             agent.from_checkpoint(ckpt["agent"])
 
             loop_state = ckpt.get("loop_state", {})
-            resume_active_sessions = loop_state.get(
-                "active_sessions", loop_state.get("active_days", 0),
-            )
+            resume_active_turns = loop_state.get("active_turns", 0)
             resumed = True
 
-            # Truncate session log to checkpoint session to avoid duplicates on resume
+            # Truncate turn log to checkpoint turn to avoid duplicates on resume
             if output_dir:
-                _truncate_session_log(output_dir, resume_session)
+                _truncate_turn_log(output_dir, resume_turn)
 
     if not resumed:
         env = entry.env_cls(env_cfg, seed)
@@ -290,33 +356,40 @@ def _run_single_inner(
 
     snapshots: list[EnvSnapshot] = []
     probe_results: list[ProbeResult] = []
-    per_session_action_logs: list[list[str]] = []
+    per_turn_action_logs: list[list[str]] = []
     is_llm = agent_cfg.policy not in ("heuristic",)
 
     try:
-        # LongMemEval has a fixed-length session loop (N session-days + 1
-        # probe day) governed by env.is_terminal(); always use the
-        # session-count loop.
-        active_sessions = _run_session_loop(
+        # ``_run_task`` drives bootstrap + start_session + the per-turn
+        # loop + end-of-task probes + end_session for one task. Vending
+        # exercises the per-turn loop every turn; LME / BEAM (default
+        # ``agent_during_ingestion=false``) skip it and answer purely
+        # from ``W`` via ``get_end_of_task_probes``.
+        # When ``keep_logs`` is False, hide ``output_dir`` from the
+        # task driver so it skips writing ``session_logs.jsonl`` (and
+        # per-turn checkpoint subdirs). ``probe_results.json`` is
+        # written outside this call, so it's unaffected.
+        loop_output_dir = output_dir if keep_logs else None
+        active_turns = _run_task(
             env, agent, data, log, env_cfg,
             is_llm, policy, seed, snapshots, probe_results,
-            per_session_action_logs,
-            get_probes_for_session=entry.get_probes_for_session,
-            checkpoint=checkpoint,
-            output_dir=output_dir,
+            per_turn_action_logs,
+            get_probes_for_turn=entry.get_probes_for_turn,
+            checkpoint=checkpoint and keep_logs,
+            output_dir=loop_output_dir,
             cfg_hash=cfg_hash,
         )
     finally:
         log.close()
 
-    # Add resumed active sessions
-    active_sessions += resume_active_sessions
+    # Add resumed active turns
+    active_turns += resume_active_turns
 
     if is_llm:
         print("\r" + " " * 80 + "\r", end="", flush=True)
 
     # Compute efficiency metrics
-    efficiency = entry.compute_efficiency_metrics(per_session_action_logs)
+    efficiency = entry.compute_efficiency_metrics(per_turn_action_logs)
 
     # Agent-level cost / behavior stats — independent of env, useful
     # for cross-policy comparison (token cost vs accuracy tradeoff,
@@ -356,7 +429,7 @@ def _run_single_inner(
         env_metrics = {}
 
     run_span.set_attributes({
-        "run.active_sessions": active_sessions,
+        "run.active_turns": active_turns,
         "run.avg_probe_score": avg_probe_score,
     })
     for k, v in env_metrics.items():
@@ -374,7 +447,7 @@ def _run_single_inner(
     return RunStats(
         strategy=policy,
         seed=seed,
-        active_sessions=active_sessions,
+        active_turns=active_turns,
         probe_avg_score=avg_probe_score,
         efficiency=efficiency,
         env_metrics=env_metrics,
@@ -384,7 +457,7 @@ def _run_single_inner(
 def aggregate(results: list[RunStats]) -> dict[str, dict[str, float]]:
     """Aggregate per-run stats grouped by policy.
 
-    Universal keys: ``mean_active_sessions``, ``mean_probe_avg_score``,
+    Universal keys: ``mean_active_turns``, ``mean_probe_avg_score``,
     plus ``mean_<k>`` / ``min_<k>`` for every numeric key that appears
     in ``RunStats.env_metrics`` (e.g. vending's ``mean_net_worth`` /
     ``min_net_worth`` / ``mean_units_sold``). Non-numeric env_metrics
@@ -397,8 +470,8 @@ def aggregate(results: list[RunStats]) -> dict[str, dict[str, float]]:
     out: dict[str, dict[str, float]] = {}
     for policy, runs in grouped.items():
         stats: dict[str, float] = {
-            "mean_active_sessions": round(
-                statistics.fmean(r.active_sessions for r in runs), 2
+            "mean_active_turns": round(
+                statistics.fmean(r.active_turns for r in runs), 2
             ),
             "mean_probe_avg_score": round(
                 statistics.fmean(r.probe_avg_score for r in runs), 3

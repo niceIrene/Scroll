@@ -3,7 +3,7 @@
 The agent writes Python code in fenced ```python``` blocks; the runtime
 compiles each cell with ``PyCF_ALLOW_TOP_LEVEL_AWAIT`` so async tools
 (``rlm``, async tool calls) can be awaited at top level.
-Variables persist in ``self.globals`` across cells within a session.
+Variables persist in ``self.globals`` across cells within a turn.
 
 Design note: this is the "Algorithm 1" substrate from the RLM paper
 (Zhang/Kraska/Khattab 2026). The conversation log E is loaded into
@@ -31,18 +31,15 @@ from dataclasses import dataclass, field
 _PyCF_ALLOW_TOP_LEVEL_AWAIT = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
 
 
-class EndOfSession(Exception):
-    """Raised by ``wait_for_next_session()`` inside the REPL.
+class EndOfTurn(Exception):
+    """Raised from inside the REPL to end the current turn early.
 
     The runtime catches it inside ``execute_cell`` and surfaces a
-    ``CellResult(session_ended=True)`` instead of treating it as an error.
+    ``CellResult(turn_ended=True)`` instead of treating it as an error.
+    Kept as a defensive primitive — the REPL does not bind any helper
+    that raises it; the turn-loop's documented termination signal is
+    "emit a response with no code block" (see ``CodeActAgent``).
     """
-
-
-# Back-compat alias — agent system prompts mention ``EndOfDay`` /
-# ``wait_for_next_day`` by name. Keep the old name so any external
-# code or stored prompt that references it continues to import.
-EndOfDay = EndOfSession
 
 
 @dataclass
@@ -53,18 +50,9 @@ class CellResult:
     stderr: str = ""
     exception: str | None = None  # formatted traceback string
     exc: BaseException | None = None  # original exception object, for span.record_exception()
-    session_ended: bool = False
+    turn_ended: bool = False
     # Bookkeeping (not surfaced to the agent — for tracing):
     code_chars: int = 0
-
-    # Back-compat property for callers that still read ``day_ended``.
-    @property
-    def day_ended(self) -> bool:
-        return self.session_ended
-
-    @day_ended.setter
-    def day_ended(self, value: bool) -> None:
-        self.session_ended = bool(value)
 
     def to_user_message(self) -> str:
         """Render this result as the next user-turn content for the LM.
@@ -81,8 +69,8 @@ class CellResult:
             parts.append("[stderr]\n" + _truncate(self.stderr.rstrip(), 1000, label="stderr"))
         if self.exception:
             parts.append("[exception]\n" + _truncate(self.exception.rstrip(), 1500, label="exception"))
-        if self.session_ended:
-            parts.append("[session ended]")
+        if self.turn_ended:
+            parts.append("[turn ended]")
         if not parts:
             parts.append("(no output)")
         return "\n\n".join(parts)
@@ -115,36 +103,17 @@ def _truncate(text: str, limit: int, label: str = "output") -> str:
     )
 
 
-_FENCED_PY = re.compile(
-    r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE
-)
-
-
-def extract_python_block(text: str) -> str | None:
-    """Pull fenced ``python`` block(s) out of an LM response.
-
-    If multiple blocks are present, they are concatenated with blank
-    lines between (the LM is expected to produce one block per turn,
-    but tolerate accidents). If no fences are present, return None —
-    the agent's turn is treated as final / no-op.
-    """
-    matches = _FENCED_PY.findall(text or "")
-    if not matches:
-        return None
-    return "\n\n".join(m.strip() for m in matches if m.strip()) or None
-
-
 class CellRuntime:
     """A persistent async-aware Python REPL.
 
     One ``CellRuntime`` per agent. Globals survive across ``execute_cell``
-    calls; reset by re-creating the runtime (e.g. at session boundaries
-    when ``clear_namespace_each_session=True``).
+    calls; reset by re-creating the runtime (e.g. at turn boundaries
+    when ``clear_namespace_each_turn=True``).
 
     The runtime does NOT sandbox — agent-emitted code runs with full
-    Python privileges in the current process, same trust model as
-    today's tool callbacks. Re-evaluate if/when this is exposed to
-    untrusted models.
+    Python privileges in the current process, same trust model as the
+    tool callbacks. Re-evaluate if/when this is exposed to untrusted
+    models.
     """
 
     def __init__(self, initial_globals: dict | None = None) -> None:
@@ -157,7 +126,7 @@ class CellRuntime:
         self.globals.update(kwargs)
 
     def reset(self, initial_globals: dict | None = None) -> None:
-        """Wipe per-session state; re-bind the namespace from a fresh dict.
+        """Wipe per-turn state; re-bind the namespace from a fresh dict.
 
         Persistent state objects (``log``, ``memoryspace``, ``rlm``)
         that the caller wants to survive must be re-passed in
@@ -170,8 +139,8 @@ class CellRuntime:
     async def execute_cell(self, code: str) -> CellResult:
         """Compile and run ``code`` in the persistent namespace.
 
-        Awaits top-level awaits if any. Catches ``EndOfSession`` and
-        surfaces it as ``session_ended=True``. Other exceptions are
+        Awaits top-level awaits if any. Catches ``EndOfTurn`` and
+        surfaces it as ``turn_ended=True``. Other exceptions are
         captured into ``result.exception`` as a formatted traceback so
         the agent can read what went wrong on its next turn.
 
@@ -209,8 +178,8 @@ class CellRuntime:
                         await coro
                 else:
                     exec(compiled, self.globals)
-            except EndOfSession:
-                result.session_ended = True
+            except EndOfTurn:
+                result.turn_ended = True
             except Exception as exc:
                 # Strip the runtime's own frames from the traceback so
                 # the agent sees just its code's frames — same shape as
@@ -385,32 +354,8 @@ def _format_namespace_hint(
     return ""
 
 
-# Default builders helpers — used by CodeActAgent to wire the namespace.
-
-def build_wait_for_next_session():
-    """Return a closure that raises EndOfSession when called."""
-    def wait_for_next_session():
-        """End the current session and advance to the next one.
-
-        Call this after you have finished all actions for the session.
-        Any Python code in the same cell after this call will not run.
-        """
-        raise EndOfSession()
-    return wait_for_next_session
-
-
-# Back-compat alias for the builder name. Agent system prompts mention
-# ``wait_for_next_day`` by name in many places; we'll also bind the new
-# name into the REPL alongside the old one (see CodeActAgent.init_namespace).
-build_wait_for_next_day = build_wait_for_next_session
-
-
 __all__ = [
     "CellResult",
     "CellRuntime",
-    "EndOfSession",
-    "EndOfDay",  # back-compat alias
-    "build_wait_for_next_session",
-    "build_wait_for_next_day",  # back-compat alias
-    "extract_python_block",
+    "EndOfTurn",
 ]

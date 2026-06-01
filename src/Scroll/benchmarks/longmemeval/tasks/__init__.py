@@ -3,6 +3,6 @@
 from Scroll.benchmarks.longmemeval.tasks.probes import (
     PROBES,
     compute_efficiency_metrics,
-    get_probes_for_session,
+    get_probes_for_turn,
     set_active_probe,
 )

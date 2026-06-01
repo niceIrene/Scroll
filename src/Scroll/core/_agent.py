@@ -32,23 +32,72 @@ _log = logging.getLogger(__name__)
 class BaseAgent(ABC):
     """Interface that all benchmark agents must implement.
 
-    Every agent — heuristic or LLM-based — follows the same per-session
-    cycle: ``receive_context → run_session → receive_outcomes``.
+    Task lifecycle: ``bootstrap`` → ``start_session`` → per-turn loop
+    (``receive_context → run_turn → receive_outcomes``, zero or more
+    iterations) → end-of-task probes → ``end_session``. Vending runs
+    the loop every turn; LME / BEAM in their default mode
+    (``agent_during_ingestion=false``) set ``num_turns=0`` and answer
+    purely from ``W`` via end-of-task probes.
+
+    A *session* = agent-instance lifetime. Today every env runs one
+    session per task; ``start_session`` / ``end_session`` exist so
+    future multi-session envs (or BEAM ``probe_isolation="fresh"``) can
+    spawn a fresh agent context per session. Both default to no-ops.
     """
 
     last_context: list[str]
 
-    @abstractmethod
-    def run_session(self, env: BaseEnvironment) -> list[str]:
-        """Execute one simulation session. Returns a list of action log strings."""
+    def bootstrap(self, env: BaseEnvironment) -> None:
+        """Hook fired once per task, BEFORE ``start_session``.
+
+        Owns the task-wide env→E ingestion step. Default no-op.
+        :class:`ScrollAgent` overrides to delegate to its memoryspace's
+        attached ingestor — so the actual env-specific bulk-load
+        code (LME haystack, BEAM batches) lives in the ingestor, not
+        the agent.
+
+        Distinct from :meth:`start_session` so that ``probe_isolation
+        ="fresh"`` (BEAM) can spawn fresh agent sessions per probe
+        without re-running ingest each time. Ingest happens once;
+        start_session may happen multiple times.
+        """
+        return None
+
+    def start_session(self) -> None:
+        """Hook fired when a new agent session begins.
+
+        Called once by the harness (``_run_task``) before the first
+        ``run_turn``, and again per probe under
+        ``probe_isolation="fresh"``. Default no-op. Subclasses
+        override to wipe / rebuild per-session in-context state
+        (e.g. ``LongMemEvalAgent`` reloading cross-task distilled
+        hints at session start). Must be safe to call multiple
+        times in a task.
+        """
+        return None
+
+    def end_session(self) -> None:
+        """Hook fired when an agent session ends.
+
+        Called once by the harness (``_run_task``) after the last
+        ``run_turn`` and any end-of-task probes. Default no-op.
+        Subclasses override for per-instance teardown (e.g. flushing
+        distilled hints out to the cross-task store, releasing
+        connections held by a sub-LM client).
+        """
+        return None
 
     @abstractmethod
-    def receive_outcomes(self, session_idx: int, logs: list[str]) -> None:
-        """Receive environment outcome logs after step_session."""
+    def run_turn(self, env: BaseEnvironment) -> list[str]:
+        """Execute one simulation turn. Returns a list of action log strings."""
 
     @abstractmethod
-    def receive_context(self, session_idx: int, notes: list[str]) -> None:
-        """Receive external data source notes at the start of a session."""
+    def receive_outcomes(self, turn_idx: int, logs: list[str]) -> None:
+        """Receive environment outcome logs after step_turn."""
+
+    @abstractmethod
+    def receive_context(self, turn_idx: int, notes: list[str]) -> None:
+        """Receive external data source notes at the start of a turn."""
 
     @abstractmethod
     def answer_probe(self, question: str) -> str:
@@ -61,8 +110,8 @@ class BaseAgent(ABC):
 
     @property
     @abstractmethod
-    def session_ended(self) -> bool:
-        """Whether the agent has signaled end-of-session."""
+    def turn_ended(self) -> bool:
+        """Whether the agent has signaled end-of-turn."""
 
     def probe_user_hint(self, probe=None) -> str:
         """Strategy-specific reminder appended to the probe user message.
@@ -81,7 +130,7 @@ class BaseAgent(ABC):
         default value is ``None``.
 
         Putting this text NEXT TO the probe question (instead of in the
-        agent's ``sys_prompt``) keeps it out of the session-loop prompt
+        agent's ``sys_prompt``) keeps it out of the turn-loop prompt
         where it's irrelevant and brings it adjacent to the actual
         probe Q where the model is most likely to act on it.
 

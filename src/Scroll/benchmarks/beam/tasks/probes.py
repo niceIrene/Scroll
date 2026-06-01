@@ -154,6 +154,12 @@ _active_item: BeamItem | None = None
 _active_cfg: BeamEnvConfig | None = None
 _active_probes: list[ProbeSpec] = []
 _active_category: str | None = None  # last-injected probe's category
+# Mirrors ``BeamEnvConfig.agent_during_ingestion`` for the active run.
+# Under the SCROLL-pure path (``False``) probes fire end-of-task via
+# :meth:`BeamEnv.get_end_of_task_probes` and the per-turn registry
+# returns ``[]``. Under the legacy path (``True``) the per-turn
+# registry returns all probes on the ``+1`` turn.
+_active_agent_during_ingestion: bool = False
 
 
 def active_category() -> str | None:
@@ -171,22 +177,36 @@ def compose_user_postscript() -> str:
 def set_active_item(item: BeamItem, cfg: BeamEnvConfig) -> None:
     """Register the item + build ProbeSpecs for all its probing questions."""
     global _active_item, _active_cfg, _active_probes
+    global _active_agent_during_ingestion
     _active_item = item
     _active_cfg = cfg
     _active_probes = [
         _build_probe(item, pq, cfg) for pq in item.probing_questions
     ]
+    _active_agent_during_ingestion = bool(
+        getattr(cfg, "agent_during_ingestion", False)
+    )
 
 
 PROBES: list[ProbeSpec] = []  # populated per-run via set_active_item
 
 
-def get_probes_for_session(session_idx: int) -> list[ProbeSpec]:
-    """All probes fire on the probe day (= num_batches + 1)."""
+def get_probes_for_turn(turn_idx: int) -> list[ProbeSpec]:
+    """Per-turn probe registry.
+
+    Under the SCROLL-pure path (``agent_during_ingestion=False``,
+    default) returns ``[]`` — probes fire end-of-task via
+    :meth:`BeamEnv.get_end_of_task_probes`.
+
+    Under the legacy path all probes fire on the probe turn
+    (= num_batches + 1).
+    """
+    if not _active_agent_during_ingestion:
+        return []
     if not _active_probes:
         return []
-    probe_session = _active_probes[0].session_idx
-    if session_idx != probe_session:
+    probe_turn = _active_probes[0].turn_idx
+    if turn_idx != probe_turn:
         return []
     return list(_active_probes)
 
@@ -229,7 +249,7 @@ def _build_probe(item: BeamItem, pq: BeamProbingQuestion, cfg: BeamEnvConfig) ->
             judge_cfg=judge_cfg,
         )
 
-    # Build the prompt with category + question text. The probe day is
+    # Build the prompt with category + question text. The probe turn is
     # num_batches + 1 (same shape as LongMemEval).
     nudge = _CATEGORY_POSTSCRIPT.get(pq.category, "")
     question_text = (
@@ -242,7 +262,7 @@ def _build_probe(item: BeamItem, pq: BeamProbingQuestion, cfg: BeamEnvConfig) ->
 
     return ProbeSpec(
         question_id=qid,
-        session_idx=item.num_batches + 1,
+        turn_idx=item.num_batches + 1,
         question=question_text,
         ground_truth_fn=gt_fn,
         scoring_fn=scoring_fn,

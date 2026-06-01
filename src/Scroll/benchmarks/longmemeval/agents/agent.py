@@ -16,12 +16,12 @@ to LongMemEval:
   tool call against a persistent REPL with ``ms`` / ``log`` / ``rlm``
   / ``extract_time_range`` bound.
 
-Cross-task procedural memory (``procedural_hints``) is the LME-specific
-extra: after the judge scores each probe, ``_on_probe_complete``
-distills a 1-3 hint case study via a one-shot sub-LM and persists it
-to a per-run ``_shared_memoryspace.json`` (file-locked). The NEXT probe
-of the same ``question_type`` sees the top-K most-relevant hints
-injected at the top of its probe hint.
+Procedural memory (``procedural_hints``) is the LME-specific extra:
+after the judge scores each probe, ``_on_probe_complete`` distills a
+1-3 hint case study via a one-shot sub-LM and writes it to the
+per-task memoryspace. Subsequent probes of the same ``question_type``
+in the same task see the top-K most-relevant hints injected at the
+top of the probe hint.
 """
 
 from __future__ import annotations
@@ -40,11 +40,13 @@ from Scroll.core._codeact_agent import (
     _detect_cell_ops,
     _is_abstention_text,
     _tracer,
+    split_response_into_text_and_tools,
 )
+from Scroll.core._codeact_agent import EXECUTE_PYTHON_TOOL_NAME
 from Scroll.tools.chat_memory import (
     handle_only_body,
     make_time_range_extractor,
-    probe_session_body,
+    probe_turn_body,
 )
 from Scroll.tools.chat_memory import (
     make_chat_memory_namespace,
@@ -57,47 +59,6 @@ from Scroll.benchmarks.longmemeval.ingestor import (
 
 
 _log = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Probe-time tool schema. Probe-mode Python runs through an OpenAI-style
-# ``tools`` interface so the model can reason in natural-language message
-# content while passing CODE through a structured ``code`` parameter.
-# Session-loop runs are auto-advanced (no LM call), so this affects ONLY
-# probe answering.
-# ---------------------------------------------------------------------------
-
-_EXECUTE_PYTHON_TOOL_NAME = "execute_python"
-
-_EXECUTE_PYTHON_TOOL_SCHEMA: dict = {
-    "type": "function",
-    "function": {
-        "name": _EXECUTE_PYTHON_TOOL_NAME,
-        "description": (
-            "Execute a Python snippet in the persistent REPL to answer "
-            "the probe. Use it to query ``ms`` / ``log`` and call "
-            "``await rlm(...)``. REPL globals persist across calls, "
-            "so a later call can use variables (``rows``, ``candidates``) "
-            "defined earlier. The snippet's stdout / stderr / any "
-            "traceback comes back as a tool_result. Pass ONLY Python "
-            "source as ``code`` — no markdown fences, no prose."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "description": (
-                        "Python source. Use ``print(x)`` to surface "
-                        "values (the REPL does NOT auto-display the "
-                        "last expression)."
-                    ),
-                },
-            },
-            "required": ["code"],
-        },
-    },
-}
 
 
 # ---------------------------------------------------------------------------
@@ -172,25 +133,18 @@ def _parse_json_tolerant(raw: str):
 class LongMemEvalAgent(ScrollAgent):
     """SCROLL agent for LongMemEval.
 
-    Read-only memoryspace + dspy.RLM sub-agent + cross-task procedural
-    memory (``procedural_hints`` distilled post-probe and injected into
-    future probes of the same ``question_type``).
+    Read-only memoryspace + dspy.RLM sub-agent + procedural memory
+    (``procedural_hints`` distilled post-probe and injected into
+    future probes of the same ``question_type`` within the same task).
     """
 
-    # SCROLL feature flags
-    readonly_memoryspace = True
+    # SCROLL feature flag
     expose_rlm = True
 
     sys_prompt = SYSTEM_PROMPT
     probe_max_iters = 10
 
-    # Cross-task procedural memory: orchestrator wires ``cfg.shared_memoryspace_path``
-    # to a per-run shared JSON file. The base mechanism loads
-    # ``procedural_hints`` at agent init and merges back after every session-end.
-    shared_memoryspace_keys = ["procedural_hints"]
-
     procedural_hints_cap_total = 500
-    procedural_hints_per_qtype_cap = 50
     procedural_hints_in_prompt = 5
 
     def __init__(self, cfg, storage, data) -> None:
@@ -265,11 +219,11 @@ class LongMemEvalAgent(ScrollAgent):
     # don't override ``namespace_docs()`` — the base class returns "" and
     # ``_probe_sys_prompt`` simply skips it.
 
-    def session_prompt(self, session_idx: int) -> str:
+    def turn_prompt(self, turn_idx: int) -> str:
         # Auto-advance: agent only acts at probe time.
         env = self._tool_state.env
         if not getattr(env, "current_session", None):
-            return probe_session_body(session_idx)
+            return probe_turn_body(turn_idx)
         return handle_only_body()
 
     def _latest_session_iso(self) -> str | None:
@@ -284,9 +238,11 @@ class LongMemEvalAgent(ScrollAgent):
         return rows[0]["session_ts_iso"] if rows else None
 
     # ----- Probe-mode system prompt -----
-    # Drop the base CodeActAgent ``PROBE_SUBSTRATE_PROMPT`` prelude — in
-    # this tool-call substrate the loop shape is structural (text-only
-    # response = final answer), so the prelude is redundant.
+    # In this tool-call substrate the loop shape is structural
+    # (no-tool-call response = final answer), so no separate "probe
+    # mode" prelude is needed. We just splice in any env-supplied
+    # probe-format hints (rare these days; ride on the user-msg
+    # postscript instead) plus the regular sys_prompt + extras.
 
     def _probe_sys_prompt(self) -> str:
         parts: list[str] = []
@@ -301,39 +257,12 @@ class LongMemEvalAgent(ScrollAgent):
 
     # ----- Probe loop — OpenAI tool-call format -----
 
-    async def _call_probe_model(self, msgs: list):
-        """Wrapper around ``self._model`` that passes ``tools=`` and
-        quota-aware retry."""
-        last_err: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                return await self._model(
-                    msgs,
-                    tools=[_EXECUTE_PYTHON_TOOL_SCHEMA],
-                    tool_choice="auto",
-                )
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                err_str = str(e).lower()
-                is_quota = any(
-                    s in err_str
-                    for s in ("429", "quota", "rate", "insufficient")
-                )
-                if attempt < 3 and is_quota:
-                    delay = 15 * attempt
-                    _log.warning(
-                        "LongMemEvalAgent probe model quota error "
-                        "(attempt %d/3): %.150s — backing off %ds",
-                        attempt, e, delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                raise
-        raise last_err  # type: ignore[misc]
-
     async def _answer_probe_inner(self, max_iters: int) -> str:
-        """Probe loop using ``execute_python`` tool calls instead of
-        fenced ``python`` blocks.
+        """LME probe loop. Inherited base ``_call_model`` already passes
+        ``tools=[EXECUTE_PYTHON_TOOL_SCHEMA]`` (from ``CodeActAgent``);
+        this override adds the LME-specific failure-mode handling:
+        abstention rejection, evidence-anchored grace turn, stdout
+        fallback.
         """
         last_text = ""
         last_stdout = ""
@@ -341,7 +270,7 @@ class LongMemEvalAgent(ScrollAgent):
         zero_cell_abstain_forced = False
 
         for it in range(max_iters):
-            response = await self._call_probe_model(self._history)
+            response = await self._call_model(self._history)
 
             text_parts: list[str] = []
             tool_use_blocks: list[dict] = []
@@ -398,7 +327,7 @@ class LongMemEvalAgent(ScrollAgent):
                     "id": tc_id,
                     "type": "function",
                     "function": {
-                        "name": block.get("name") or _EXECUTE_PYTHON_TOOL_NAME,
+                        "name": block.get("name") or EXECUTE_PYTHON_TOOL_NAME,
                         "arguments": json.dumps({"code": code}),
                     },
                 })
@@ -441,7 +370,7 @@ class LongMemEvalAgent(ScrollAgent):
                     continue
                 break
 
-            day_ended = False
+            turn_ended = False
             for idx, block in enumerate(tool_use_blocks):
                 tc_id = tool_calls_payload[idx]["id"]
                 tc_args = json.loads(
@@ -465,7 +394,7 @@ class LongMemEvalAgent(ScrollAgent):
                 ops_label = ", ".join(ops) if ops else "no-ops"
                 line_count = code.count("\n") + 1
                 span_name = (
-                    f"probe_cell d{self._current_session}.i{it}.{idx} "
+                    f"probe_cell d{self._current_turn}.i{it}.{idx} "
                     f"({line_count}L) [{ops_label}]"
                 )
                 code_preview = code if len(code) <= 3000 else (
@@ -474,8 +403,8 @@ class LongMemEvalAgent(ScrollAgent):
                 )
                 with _tracer.start_as_current_span(span_name) as span:
                     span.set_attributes({
-                        "tool.name": _EXECUTE_PYTHON_TOOL_NAME,
-                        "cell.session": self._current_session,
+                        "tool.name": EXECUTE_PYTHON_TOOL_NAME,
+                        "cell.session": self._current_turn,
                         "cell.iter": it,
                         "cell.tool_idx": idx,
                         "cell.kind": "probe",
@@ -569,10 +498,10 @@ class LongMemEvalAgent(ScrollAgent):
                     "tool_call_id": tc_id,
                     "content": result.to_user_message() + budget_tag,
                 })
-                if result.day_ended:
-                    day_ended = True
+                if result.turn_ended:
+                    turn_ended = True
                     break
-            if day_ended:
+            if turn_ended:
                 break
 
         # Budget-exhaustion grace turn. ~45% of pre-fix failures were
@@ -793,8 +722,8 @@ class LongMemEvalAgent(ScrollAgent):
         def _has_takeaway(h: dict) -> bool:
             # v2 schema needs both pattern AND summary to render
             # something useful; legacy schema (lesson / anti_pattern)
-            # still counts as "has takeaway" so old shared_memoryspace
-            # entries survive.
+            # still counts as "has takeaway" so old playbook entries
+            # survive.
             new_has = (h.get("pattern") or "").strip() and (h.get("summary") or "").strip()
             legacy_has = (
                 (h.get("lesson") or "").strip()
@@ -864,9 +793,9 @@ class LongMemEvalAgent(ScrollAgent):
             pattern = (h.get("pattern") or "").strip()
             summary = (h.get("summary") or "").strip()
             # Legacy schema (pre-v2) hints — pattern/summary may be
-            # absent. Fall back to older field names so the shared
-            # memoryspace.json from prior runs still surfaces useful hints
-            # instead of getting filtered out by the renderer.
+            # absent. Fall back to older field names so legacy playbook
+            # entries still surface useful hints instead of getting
+            # filtered out by the renderer.
             legacy_lesson = (h.get("lesson") or "").strip()
             legacy_anti = (h.get("anti_pattern") or "").strip()
             legacy_code = (h.get("code") or "").strip()
@@ -911,7 +840,7 @@ class LongMemEvalAgent(ScrollAgent):
         qid = getattr(probe, "question_id", "") if probe else ""
         qtype = self._resolve_qtype(probe) or "unknown"
         cells_count = self._count_probe_cells()
-        span_name = f"probe_distill d{self._current_session} qid={qid}"
+        span_name = f"probe_distill d{self._current_turn} qid={qid}"
         with _tracer.start_as_current_span(span_name) as span:
             span.set_attributes({
                 "openinference.span.kind": "CHAIN",
@@ -1011,10 +940,6 @@ class LongMemEvalAgent(ScrollAgent):
             merged = (existing + new_hints)[-self.procedural_hints_cap_total:]
             self.memoryspace.json_write("procedural_hints", merged)
             self._lessons_written += len(new_hints)
-            # Persist immediately so parallel sibling QAs see this before
-            # our session-end hook fires (post-probe is the last meaningful
-            # event in LME).
-            self._persist_shared_memoryspace_state()
             span.set_attribute("distill.hints_total_after", len(merged))
 
     def _count_probe_cells(self) -> int:
@@ -1071,62 +996,19 @@ class LongMemEvalAgent(ScrollAgent):
                     parts.append(f"SEE:\n{content}")
         return "\n\n".join(parts)
 
-    # ----- Cross-task store hook -----
-
-    def get_memoryspace(self):  # type: ignore[override]
-        return self.memoryspace
-
-    def _filter_for_shared_write(self, key: str, value):  # type: ignore[override]
-        """Dedup + per-qtype cap before writing to cross-task store.
-
-        Identity is (qtype, polarity, pattern OR lesson) — the new
-        ``pattern`` field is the discriminator under the v2 schema;
-        legacy ``lesson`` text falls through for pre-v2 entries so
-        de-duplication still works across the schema bump.
-        """
-        if key != "procedural_hints" or not isinstance(value, list):
-            return value
-        seen: set[str] = set()
-        deduped: list = []
-        for entry in value:
-            if not isinstance(entry, dict):
-                continue
-            identity = (
-                entry.get("pattern")
-                or entry.get("lesson")
-                or entry.get("summary")
-                or ""
-            )
-            sig = (
-                f"{entry.get('qtype')}|"
-                f"{entry.get('polarity')}|"
-                f"{identity}"
-            )
-            if sig in seen:
-                continue
-            seen.add(sig)
-            deduped.append(entry)
-        by_qtype: dict[str, list] = {}
-        for entry in deduped:
-            by_qtype.setdefault(entry.get("qtype", ""), []).append(entry)
-        capped: list = []
-        for qtype, rows in by_qtype.items():
-            capped.extend(rows[-self.procedural_hints_per_qtype_cap:])
-        return capped[-self.procedural_hints_cap_total:]
-
     # ----- Auto-ingest -----
 
-    def run_session(self, env) -> list[str]:
+    def run_turn(self, env) -> list[str]:
         """Mirror the env's chat session into ``E``. The attached
         :class:`LMEIngestor` will catch up on the next ``ms`` read; we
-        trigger it eagerly here so any same-session probe sees fresh W.
+        trigger it eagerly here so any same-turn probe sees fresh W.
         """
-        write_chat_turn_entries(self.log, env, env.session_idx + 1)
+        write_chat_turn_entries(self.log, env, env.turn_idx + 1)
         try:
             self.memoryspace._maybe_catch_up()
         except Exception:  # noqa: BLE001
             _log.warning(
-                "LongMemEvalAgent ingest catch-up failed (session_idx=%s)",
-                env.session_idx + 1, exc_info=True,
+                "LongMemEvalAgent ingest catch-up failed (turn_idx=%s)",
+                env.turn_idx + 1, exc_info=True,
             )
         return []

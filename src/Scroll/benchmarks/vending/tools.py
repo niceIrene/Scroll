@@ -3,7 +3,7 @@
 These functions interact with ``VendingEnv`` and
 ``DataSourceManager``. Under the RLM-style substrate they are
 exposed to the agent's REPL via
-:func:`Scroll.benchmarks.vending.agents._namespace.make_env_namespace` —
+:func:`Scroll.benchmarks.vending.agents.agent._make_env_namespace` —
 each closure is unwrapped from ``ToolResponse`` to a plain string so
 ``print(read_email())`` works in a code cell.
 """
@@ -25,7 +25,7 @@ def send_email(state: ToolState, to: str, subject: str, body: str):
     state._tick()
     result = state.data.send_email(
         to=to, subject=subject, body=body,
-        session_idx=state.env.session_idx, env=state.env,
+        turn_idx=state.env.turn_idx, env=state.env,
     )
     state._action_log.append(f"send_email to={to} subject={subject}")
     return _resp(result)
@@ -156,17 +156,6 @@ def chat_with_sub_agent(state: ToolState, question: str):
     )
 
 
-def wait_for_next_day(state: ToolState):
-    state._tick()
-    state._session_ended = True
-    state._action_log.append("wait_for_next_day")
-    return _resp(
-        "Day ended. Sales will now be simulated overnight. "
-        "Summarize what you accomplished today.",
-        interrupted=True,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Closure factories + registration
 # ---------------------------------------------------------------------------
@@ -250,10 +239,6 @@ def _make_env_tool_closures(state: ToolState) -> list:
         """
         return chat_with_sub_agent(state, question)
 
-    def wait_for_next_day_tool():
-        """End the current day and advance to the next morning. Call this when you have finished all actions for today."""
-        return wait_for_next_day(state)
-
     return [
         send_email_tool,
         read_email_tool,
@@ -263,14 +248,13 @@ def _make_env_tool_closures(state: ToolState) -> list:
         sub_agent_specs_tool,
         run_sub_agent_tool,
         chat_with_sub_agent_tool,
-        wait_for_next_day_tool,
     ]
 
 
 ENV_TOOL_NAMES = {
     "send_email_tool", "read_email_tool", "read_email_inbox_tool",
     "ai_web_search_tool", "get_money_balance_tool", "sub_agent_specs_tool",
-    "run_sub_agent_tool", "chat_with_sub_agent_tool", "wait_for_next_day_tool",
+    "run_sub_agent_tool", "chat_with_sub_agent_tool",
 }
 
 
@@ -278,7 +262,7 @@ def register_env_tools(toolkit, state: ToolState) -> None:
     """No-op kept for compatibility with ``core/_registry.py``.
 
     Under the RLM substrate, env tools are surfaced as REPL globals
-    by :func:`Scroll.benchmarks.vending.agents._namespace.make_env_namespace`
+    by :func:`Scroll.benchmarks.vending.agents.agent._make_env_namespace`
     — there's no AgentScope ``Toolkit`` to register on. The registry
     still calls this hook by name; left as a no-op so the lookup
     succeeds.

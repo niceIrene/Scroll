@@ -10,8 +10,8 @@ the score for one probe is a single network call wrapped by
 
 The active item / config pair is registered per-run via
 :func:`set_active_probe` (called from
-:meth:`LongMemEvalEnv.__init__`); ``get_probes_for_session`` returns
-the probe only on the final session. Single-process re-runs are safe because
+:meth:`LongMemEvalEnv.__init__`); ``get_probes_for_turn`` returns
+the probe only on the final turn. Single-process re-runs are safe because
 each :func:`run_single` constructs a fresh env, which overwrites the
 active probe.
 """
@@ -46,7 +46,7 @@ __all__ = [
     "active_question_type",
     "compose_user_postscript",
     "compute_efficiency_metrics",
-    "get_probes_for_session",
+    "get_probes_for_turn",
     "set_active_probe",
 ]
 
@@ -58,6 +58,13 @@ __all__ = [
 _active_probe: ProbeSpec | None = None
 _active_qtype: str | None = None
 _active_is_abstention: bool = False
+# Mirrors ``LongMemEvalEnvConfig.agent_during_ingestion`` for the active
+# run. Under the SCROLL-pure path (``False``) the probe fires
+# end-of-task via :meth:`LongMemEvalEnv.get_end_of_task_probes` and
+# the per-turn registry returns ``[]``. Under the legacy path
+# (``True``) the per-turn registry returns the probe on the ``+1``
+# turn.
+_active_agent_during_ingestion: bool = False
 
 
 def active_question_type() -> str | None:
@@ -89,22 +96,31 @@ def compose_user_postscript() -> str:
 def set_active_probe(item: LongMemEvalItem, cfg: LongMemEvalEnvConfig) -> None:
     """Register the probe for this run; called from env.__init__."""
     global _active_probe, _active_qtype, _active_is_abstention
+    global _active_agent_during_ingestion
     _active_probe = _build_probe(item, cfg)
     _active_qtype = item.question_type
     _active_is_abstention = item.is_abstention
+    _active_agent_during_ingestion = bool(
+        getattr(cfg, "agent_during_ingestion", False)
+    )
 
 
 PROBES: list[ProbeSpec] = []  # filled per-run via set_active_probe
 
 
-def get_probes_for_session(session_idx: int) -> list[ProbeSpec]:
-    if _active_probe is None or _active_probe.session_idx != session_idx:
+def get_probes_for_turn(turn_idx: int) -> list[ProbeSpec]:
+    # New SCROLL-pure path: probe fires end-of-task (see
+    # :meth:`LongMemEvalEnv.get_end_of_task_probes`), not on a turn.
+    if not _active_agent_during_ingestion:
+        return []
+    # Legacy path: probe fires on the +1 probe-only turn.
+    if _active_probe is None or _active_probe.turn_idx != turn_idx:
         return []
     return [_active_probe]
 
 
 def compute_efficiency_metrics(daily_action_logs: list[list[str]]) -> dict:
-    """Per-session action stats. LME has no env actions (the agent only
+    """Per-turn action stats. LME has no env actions (the agent only
     acts at probe time), so ``avg_actions_per_day`` is always 0; we
     keep ``total_days`` for run-shape sanity. Token / LM-call cost is
     added downstream by ``benchmark.py`` from ``self._tool_state``.
@@ -133,6 +149,7 @@ def _build_probe(item: LongMemEvalItem, cfg: LongMemEvalEnvConfig) -> ProbeSpec:
         "model": cfg.judge_model,
         "api_key_env": cfg.judge_api_key_env,
         "api_base": cfg.judge_api_base,
+        "api_base_env": cfg.judge_api_base_env,
     }
 
     def gt_fn(snapshots: list[EnvSnapshot], data) -> str:
@@ -162,12 +179,15 @@ def _build_probe(item: LongMemEvalItem, cfg: LongMemEvalEnvConfig) -> ProbeSpec:
 
     return ProbeSpec(
         question_id=qid,
-        # Probe fires on the dedicated probe-only session = total_sessions+1
-        # (one iteration past the last haystack session). The probe
-        # session's run_session exposes "no session today" so the agent's
-        # session-loop history at probe time isn't dominated by the last
-        # ingest's transcript.
-        session_idx=item.total_sessions + 1,
+        # ``turn_idx`` only matters under the legacy
+        # ``agent_during_ingestion=True`` path: the probe rides on the
+        # dedicated probe-only turn ``total_sessions+1`` (one iteration
+        # past the last haystack chat session), whose ``run_turn``
+        # exposes "no chat session today" so the agent's turn-loop
+        # history at probe time isn't dominated by the last ingest's
+        # transcript. The SCROLL-pure path fires the probe end-of-task
+        # and ignores this field.
+        turn_idx=item.total_sessions + 1,
         question=question_text,
         ground_truth_fn=gt_fn,
         scoring_fn=scoring_fn,
@@ -395,7 +415,12 @@ def _judge_score(
         )
         return 0.0
 
-    client = OpenAI(api_key=api_key, base_url=judge_cfg.get("api_base"))
+    _base_env = judge_cfg.get("api_base_env")
+    base_url = (
+        judge_cfg.get("api_base")
+        or (os.environ.get(_base_env) if _base_env else None)
+    )
+    client = OpenAI(api_key=api_key, base_url=base_url)
 
     # `enable_thinking` is a Dashscope-only extra_body field; sending it to
     # the OpenAI endpoint returns HTTP 400. Gate on the base_url / model.

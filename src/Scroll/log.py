@@ -6,7 +6,7 @@ in-memory list of :class:`Scroll.core.LogEntry` records mirrored to
 loses at most one in-flight LLM call).
 
 The agent reads from this through :class:`Scroll.tools._log_handle.LogHandle`
-— never writes to it directly. Harness code (CodeActAgent, run_session,
+— never writes to it directly. Harness code (CodeActAgent, run_turn,
 make_dspy_rlm) holds the raw log for writes.
 """
 

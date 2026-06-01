@@ -1,4 +1,8 @@
-"""Vending environment evaluation: probes and rewards."""
+"""Vending environment evaluation: probes (LLM-judged) and rewards."""
 
-from Scroll.benchmarks.vending.tasks.probes import PROBES, get_probes_for_session
-from Scroll.benchmarks.vending.tasks.rewards import score_numeric, score_keyword, compute_efficiency_metrics
+from Scroll.benchmarks.vending.tasks.probes import (
+    PROBES,
+    get_probes_for_turn,
+    set_judge_config,
+)
+from Scroll.benchmarks.vending.tasks.rewards import compute_efficiency_metrics
