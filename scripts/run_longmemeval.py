@@ -224,7 +224,7 @@ def _run_one_qa(job: dict) -> dict:
         "question_type": qtype,
         "score": score,
         "hypothesis": hypothesis,
-        "active_sessions": stats.active_sessions,
+        "active_sessions": stats.active_turns,
         # Cost / behavior stats (per-QA) — token totals, LM-call count,
         # lessons-written count. Used for cross-policy comparison.
         "lm_calls": int(efficiency.get("lm_calls", 0) or 0),

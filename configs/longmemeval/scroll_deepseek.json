@@ -3,15 +3,15 @@
   "simulation": {
     "dataset_path": "external/longmemeval/data/longmemeval_s_cleaned.json",
     "question_index": 0,
-    "judge_model": "qwen3.7-max",
+    "judge_model": "deepseek-v4-pro",
     "judge_api_key_env": "US_DASHSCOPE_API_KEY",
-    "judge_api_base": "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+    "judge_api_base_env": "US_DASHSCOPE_BASE_URL"
   },
   "agent": {
     "policy": "scroll",
     "qwen_model_name": "deepseek-v4-pro",
-    "qwen_api_key_env": "CN_DASHSCOPE_API_KEY",
-    "qwen_api_base_env": "CN_DASHSCOPE_BASE_URL",
+    "qwen_api_key_env": "US_DASHSCOPE_API_KEY",
+    "qwen_api_base_env": "US_DASHSCOPE_BASE_URL",
     "enable_thinking": false,
     "message_budget": 600,
     "max_iters_per_turn": 10,

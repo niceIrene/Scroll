@@ -149,6 +149,7 @@ def _build_probe(item: LongMemEvalItem, cfg: LongMemEvalEnvConfig) -> ProbeSpec:
         "model": cfg.judge_model,
         "api_key_env": cfg.judge_api_key_env,
         "api_base": cfg.judge_api_base,
+        "api_base_env": cfg.judge_api_base_env,
     }
 
     def gt_fn(snapshots: list[EnvSnapshot], data) -> str:
@@ -414,7 +415,12 @@ def _judge_score(
         )
         return 0.0
 
-    client = OpenAI(api_key=api_key, base_url=judge_cfg.get("api_base"))
+    _base_env = judge_cfg.get("api_base_env")
+    base_url = (
+        judge_cfg.get("api_base")
+        or (os.environ.get(_base_env) if _base_env else None)
+    )
+    client = OpenAI(api_key=api_key, base_url=base_url)
 
     # `enable_thinking` is a Dashscope-only extra_body field; sending it to
     # the OpenAI endpoint returns HTTP 400. Gate on the base_url / model.

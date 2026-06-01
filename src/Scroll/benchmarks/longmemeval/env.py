@@ -73,6 +73,7 @@ class LongMemEvalEnvConfig:
     judge_model: str = "gpt-4o-2024-08-06"
     judge_api_key_env: str = "CN_DASHSCOPE_API_KEY"
     judge_api_base: str | None = None
+    judge_api_base_env: str | None = None
 
     # SCROLL-pure vs. legacy ingestion path. When ``False`` (default,
     # the SCROLL-pure path): the env bulk-loads the haystack into
