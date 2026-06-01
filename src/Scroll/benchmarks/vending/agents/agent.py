@@ -201,17 +201,6 @@ class VendingAgent(ScrollAgent):
         self._pending_datasource_notes = []
         return sections
 
-    def to_checkpoint(self) -> dict:
-        data = super().to_checkpoint()
-        data["pending_env_outcomes"] = list(self._pending_env_outcomes)
-        data["pending_datasource_notes"] = list(self._pending_datasource_notes)
-        return data
-
-    def from_checkpoint(self, data: dict) -> None:
-        super().from_checkpoint(data)
-        self._pending_env_outcomes = list(data.get("pending_env_outcomes", []))
-        self._pending_datasource_notes = list(data.get("pending_datasource_notes", []))
-
     # ----- Probe answering -----
     # Vending treats a probe as just one more user message in the same
     # conversation: no system-prompt swap, no history rollback, no
@@ -245,11 +234,13 @@ class VendingAgent(ScrollAgent):
                 self._runtime.globals.pop("probe_question", None)
         return answer
 
-    # ----- Checkpoint (inbox cursor; memoryspace handled by base) -----
+    # ----- Checkpoint (inbox cursor + pending buffers; memoryspace handled by base) -----
 
     def to_checkpoint(self) -> dict:
         data = super().to_checkpoint()
         data["emitted_inbox_count"] = self._emitted_inbox_count
+        data["pending_env_outcomes"] = list(self._pending_env_outcomes)
+        data["pending_datasource_notes"] = list(self._pending_datasource_notes)
         return data
 
     def from_checkpoint(self, data: dict) -> None:
@@ -259,3 +250,5 @@ class VendingAgent(ScrollAgent):
             "emitted_inbox_count",
             data.get("embedded_inbox_count", 0),
         )
+        self._pending_env_outcomes = list(data.get("pending_env_outcomes", []))
+        self._pending_datasource_notes = list(data.get("pending_datasource_notes", []))
