@@ -190,7 +190,9 @@ def main() -> None:
         from Scroll._tracing import setup as setup_tracing
         from openinference.instrumentation.openai import OpenAIInstrumentor
         setup_tracing(args.tracing_url)
-        OpenAIInstrumentor().instrument()
+        _oai = OpenAIInstrumentor()
+        if not getattr(_oai, "_is_instrumented_by_opentelemetry", False):
+            _oai.instrument()
     agentscope.init()
     if args.tracing_url:
         # AgentScope's @trace decorators are gated on _config.trace_enabled,
