@@ -145,7 +145,7 @@ def _run_one_qa(job: dict) -> dict:
         # Anything else still goes to the default handler.
         loop.default_exception_handler(context)
     try:
-        _asyncio.get_event_loop().set_exception_handler(_silent_handler)
+        _asyncio.get_running_loop().set_exception_handler(_silent_handler)
     except RuntimeError:
         # No running loop yet — handler gets installed when the
         # agent's loop starts; falling back to logger filter is fine.
@@ -161,7 +161,9 @@ def _run_one_qa(job: dict) -> dict:
         from Scroll._tracing import setup as _setup_tracing
         from openinference.instrumentation.openai import OpenAIInstrumentor as _OAI
         _setup_tracing(tracing_url)
-        _OAI().instrument()
+        _oai = _OAI()
+        if not getattr(_oai, "_is_instrumented_by_opentelemetry", False):
+            _oai.instrument()
 
     import agentscope as _agentscope
     _agentscope.init()
@@ -381,7 +383,9 @@ def main() -> None:
         from Scroll._tracing import setup as setup_tracing
         from openinference.instrumentation.openai import OpenAIInstrumentor
         setup_tracing(args.tracing_url)
-        OpenAIInstrumentor().instrument()
+        _oai = OpenAIInstrumentor()
+        if not getattr(_oai, "_is_instrumented_by_opentelemetry", False):
+            _oai.instrument()
     agentscope.init()
     if args.tracing_url:
         agentscope._config.trace_enabled = True
@@ -448,7 +452,13 @@ def main() -> None:
                 "score": score,
                 "hypothesis": hyp,
                 "active_sessions": eff.get("total_sessions", 0),
-                "efficiency": eff,
+                "lm_calls": int(eff.get("lm_calls", 0) or 0),
+                "prompt_tokens": int(eff.get("prompt_tokens", 0) or 0),
+                "completion_tokens": int(eff.get("completion_tokens", 0) or 0),
+                "total_tokens": int(eff.get("total_tokens", 0) or 0),
+                "lessons_count": int(eff.get("lessons_count", 0) or 0),
+                "message_count": int(eff.get("message_count", 0) or 0),
+                "wall_seconds": float(eff.get("wall_seconds", 0.0) or 0.0),
             }
             per_qa_results.append(r)
             qtype_correct[s["qtype"]].append(score)
