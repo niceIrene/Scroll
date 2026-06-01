@@ -1437,12 +1437,16 @@ class CodeActAgent(BaseAgent):
         return {
             "tool_state": self._tool_state.to_checkpoint(),
             "iter_count": self._iter_count,
+            "current_turn": self._current_turn,
+            "history": list(self._history),
             "compressed_summary": self._compressed_summary,
         }
 
     def from_checkpoint(self, data: dict) -> None:
         self._tool_state.from_checkpoint(data["tool_state"])
         self._iter_count = int(data.get("iter_count", 0))
+        self._current_turn = int(data.get("current_turn", 0))
+        self._history = list(data.get("history", []))
         self._compressed_summary = data.get("compressed_summary", "")
 
 

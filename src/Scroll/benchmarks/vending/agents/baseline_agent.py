@@ -178,26 +178,13 @@ class BaselineVendingAgent(CodeActAgent):
         return sections
 
     def to_checkpoint(self) -> dict:
-        # CodeActAgent provides the base checkpoint shape; piggy-back
-        # the two pending buffers so resume keeps the next turn's
-        # briefing intact.
-        data = {
-            "history": list(self._history),
-            "compressed_summary": self._compressed_summary,
-            "current_turn": self._current_turn,
-            "tool_state": self._tool_state.to_checkpoint(),
-            "pending_env_outcomes": list(self._pending_env_outcomes),
-            "pending_datasource_notes": list(self._pending_datasource_notes),
-        }
+        data = super().to_checkpoint()
+        data["pending_env_outcomes"] = list(self._pending_env_outcomes)
+        data["pending_datasource_notes"] = list(self._pending_datasource_notes)
         return data
 
     def from_checkpoint(self, data: dict) -> None:
-        self._history = list(data.get("history", []))
-        self._compressed_summary = data.get("compressed_summary", "")
-        self._current_turn = data.get("current_turn", 0)
-        ts = data.get("tool_state")
-        if ts:
-            self._tool_state.from_checkpoint(ts)
+        super().from_checkpoint(data)
         self._pending_env_outcomes = list(data.get("pending_env_outcomes", []))
         self._pending_datasource_notes = list(data.get("pending_datasource_notes", []))
 
