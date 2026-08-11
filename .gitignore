@@ -1,25 +1,51 @@
-# Secrets
-.env
-.env.*
-!.env.example
-
-# Python cache/build
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Virtual environments
+# Venv (uv-managed; .projectx is the legacy Windows venv)
 .venv/
-venv/
+.projectx/
 
-# Project outputs
-output/
-output_*/
+# Run outputs
+runs/
 
-# macOS
+# Stray transcripts/logs (e.g. from interactive sessions or botched commands)
+*.log
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
 .DS_Store
 
-# Claude Code
+# Docker volumes (managed by docker-compose)
+.phoenix-data/
+
+# Local env files
+.env
+.env.local
+
+# Other repo just for reference, not part of the project
+agentscope/
+QwenPaw/
+
+# Local scratch space (embedded clones, throwaway repros)
+.scratch/
+
 .claude/
-CLAUDE.md
+
+
+# Local-only smoke config (kept on disk, not tracked)
+configs/longmemeval-smoke.yaml
+local-tasks/beam/
+local-tasks/beam/
+
+# Build artifacts
+dist/
+build/

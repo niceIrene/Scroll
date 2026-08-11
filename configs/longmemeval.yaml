@@ -1,0 +1,23 @@
+# LongMemEval memory-QA benchmark, run natively against the scroll agent.
+# NOT a Harbor dataset — drive it with `scroll-eval longmemeval configs/longmemeval.yaml`
+# (the `scroll-eval run` Harbor path refuses dataset.name == "longmemeval").
+#
+# Each instance's multi-session haystack is ingested into the agent's durable
+# memory; the single question runs as its own session and the agent answers via
+# ms.search / ms.sql_query retrieval, then an LLM judge grades it. The small
+# history_max_tokens is the memory-pressure knob: the haystack cannot fit the
+# window, so the agent must retrieve. Generate tasks first with
+# scripts/gen_longmemeval_tasks.py --src <longmemeval_*.json> --dataset longmemeval.
+agent: { type: base_agents, id: scroll_agent_A }
+model:
+  endpoint: ${OPENAI_BASE_URL}
+  name: ${OPENAI_MODEL_NAME}
+  api_key_env: OPENAI_API_KEY
+  thinking: true        # DashScope reasoning mode: true to enable (default off)
+  thinking_budget: 4000  # optional cap on reasoning tokens when thinking is on
+dataset: { type: local, name: longmemeval }
+tasks: all
+budget: { max_tokens: 2000000, wall_time_s: 600 }   # per probe (one agent.run)
+memory: { history_max_tokens: 32000 }               # small window -> forces retrieval
+trace: { run_id: auto, phoenix_project: longmemeval }
+tools: [execute_python, submit_answer]            # no bash: LME needs no shell

@@ -1,0 +1,14 @@
+# Local Terminal-Bench config.
+# Use --task for a specific task, --all-tasks for the full local dataset, and
+# --sandbox-type/--parallelism for backend selection.
+agent: { type: base_agents, id: scroll_agent_A }
+model:
+  endpoint: ${OPENAI_BASE_URL}
+  name: ${OPENAI_MODEL_NAME}
+  # For DashScope endpoints, DASHSCOPE_API_KEY is accepted when OPENAI_API_KEY is absent.
+  api_key_env: OPENAI_API_KEY
+dataset: terminal-bench-2.1
+tasks: [financial-document-processor]
+budget: { max_tokens: 50000, wall_time_s: 1000 }
+trace: { run_id: auto, phoenix_project: terminal-bench }
+sandbox: { type: docker, parallelism: 1 }

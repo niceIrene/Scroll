@@ -1,28 +1,43 @@
 [project]
-name = "Scroll"
-version = "0.3.0"
-description = "Scroll: Benchmarking data management as a foundational agent capability"
+name = "scroll-context"
+version = "0.1.0"
+description = "Scroll: context management for LLM agents — durable write-through history, token-bounded windows with an in-context eviction index, and code-driven retrieval (ms) via a persistent REPL. Public API: ScrollContextManager."
 readme = "README.md"
-requires-python = ">=3.11"
+# Looser than the evaluation harness's 3.12 pin: the shipped modules run on
+# 3.10. Do not add 3.12-only syntax under src/ without bumping this.
+requires-python = ">=3.10"
 dependencies = [
-    "agentscope>=1.0.18",
-    "arize-phoenix>=13.21.0",
-    "arize-phoenix-evals>=2.13.0,<3",
-    "opentelemetry-api>=1.40.0",
-    "opentelemetry-sdk>=1.40.0",
-    "opentelemetry-exporter-otlp>=1.40.0",
-    "dspy>=2.6.0",
+    # memoryspace.py imports opentelemetry.trace unguarded; the api package is
+    # lightweight and no-ops without a configured SDK.
+    "opentelemetry-api>=1.20",
 ]
 
-[project.scripts]
-Scroll = "Scroll.cli:main"
-
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
+packages = ["scroll_context", "scroll_context._runtime"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools.package-data]
+# The model-facing prompt protocol is data, not modules — ship the markdown so
+# a non-editable install still finds it (scroll_context.prompts reads them).
+"scroll_context" = ["*.md"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.6.0",
+]
+
+# The evaluation harness (agents, BEAM, Terminal-Bench/Harbor) lives in
+# evaluation/ as a separate, never-published workspace member — its heavy
+# dependencies stay out of this package.
+[tool.uv.workspace]
+members = ["evaluation"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
