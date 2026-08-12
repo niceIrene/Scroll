@@ -1,5 +1,5 @@
 # The scroll evaluation harness: reference agent loops (base_agent_A /
-# scroll_agent_A), the BEAM and Terminal-Bench benchmarks, and the Harbor
+# scroll_react), the BEAM and Terminal-Bench benchmarks, and the Harbor
 # sandbox orchestration. A uv workspace member that depends on the
 # scroll-context package from the repo root; never published.
 [project]

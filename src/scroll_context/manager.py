@@ -4,7 +4,7 @@ The canonical implementation of scroll's orchestration (write-through
 persistence, observation aging, token-budget eviction folded into the
 `EvictionIndex`, the pinned index placeholder, the per-step working-memory
 digest, the seeded prior-sessions map), over plain OpenAI chat-completions
-messages — `scroll_agent_A` delegates here:
+messages — `scroll_react` delegates here:
 
     {"role": "system"|"user"|"assistant"|"tool", "content": str,
      "tool_calls": [...]?, "tool_call_id": str?, "name": str?}
@@ -197,7 +197,7 @@ class ScrollContextManager:
         self._shared_run_ids = tuple(shared_run_ids)
         # Optional OpenAI `name` field stamped on the placeholder message so
         # hosts that surface message names (prompt dumps, AgentScope Msgs) can
-        # label it (scroll_agent_A uses "memory").
+        # label it (scroll_react uses "memory").
         self._placeholder_name = placeholder_name
         self._runtime = ScrollRuntime(
             history_db_path=history_db_path,
@@ -266,7 +266,7 @@ class ScrollContextManager:
         """Persist the pinned task prompt (kind='task') and prime the estimate.
 
         ``step_index``/``msg_index`` let a host keep its own log conventions
-        (scroll_agent_A stamps the task at ``step_index=-1, msg_index=1``).
+        (scroll_react stamps the task at ``step_index=-1, msg_index=1``).
         """
         text = _content_text(msg)
         self._runtime.append_log(

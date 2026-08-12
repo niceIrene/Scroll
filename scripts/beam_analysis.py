@@ -600,7 +600,7 @@ def cmd_scores(args: argparse.Namespace) -> None:
 # Per-(chat, category) headline/index-usage counts. Unlike ms-ops/cost these
 # are not in the trajectory ``metrics`` block — index usage isn't a counter the
 # runner records — so they're derived from the step actions instead. The
-# documented coarse-to-fine map idiom (scroll_agent_A/prompts/index.md) is two
+# documented coarse-to-fine map idiom (scroll_react/prompts/index.md) is two
 # sql_query phases: (2) expand a span to per-turn ``headline`` digests, then
 # (3) open the chosen turns' full ``content`` by seq range. We count those, plus
 # how often each ``ms`` retrieval primitive is issued (call sites in the

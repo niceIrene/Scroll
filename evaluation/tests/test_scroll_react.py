@@ -1,4 +1,4 @@
-"""Integration tests for scroll_agent_A.
+"""Integration tests for scroll_react.
 
 Mirrors tests/test_base_agent_A.py: scripted AgentScope ChatResponses fed
 through the agent loop, with assertions on Trajectory shape, the three
@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 
 from opentelemetry import trace
 
-from scroll_eval.base_agents.scroll_agent_A.agent import run as scroll_run
+from scroll_eval.base_agents.scroll_react.agent import run as scroll_run
 from scroll_eval.types import LoopContext, TaskSpec, TerminationReason
 
 
@@ -61,7 +61,7 @@ def test_ctx_system_prompt_is_appended_not_replacing(tmp_path):
     The composed system message must contain BOTH the bundled system.md
     (capability layer) and the eval-supplied addendum, in that order.
     """
-    from scroll_eval.base_agents.scroll_agent_A import prompts as agent_prompts
+    from scroll_eval.base_agents.scroll_react import prompts as agent_prompts
     base = agent_prompts.load("system")
 
     model = AsyncMock()
@@ -221,7 +221,7 @@ def test_scroll_agent_respects_ctx_tools_override(tmp_path):
 
 
 def test_command_timeout_clamping_and_default():
-    from scroll_eval.base_agents.scroll_agent_A.agent import _command_timeout
+    from scroll_eval.base_agents.scroll_react.agent import _command_timeout
     assert _command_timeout({}, None) == 120                 # default
     assert _command_timeout({"timeout": 400}, None) == 400    # honored
     assert _command_timeout({"timeout": 10000}, None) == 600  # hard cap
@@ -232,7 +232,7 @@ def test_command_timeout_clamping_and_default():
 
 
 def test_scroll_tools_advertise_bash_timeout():
-    from scroll_eval.base_agents.scroll_agent_A.agent import _scroll_tools
+    from scroll_eval.base_agents.scroll_react.agent import _scroll_tools
     from scroll_eval._tools_common import TOOLS
     tools = _scroll_tools()
     bash = next(t for t in tools if t["function"]["name"] == "bash")
@@ -280,7 +280,7 @@ def test_scroll_agent_stops_on_token_budget(tmp_path):
 
 def test_scroll_agent_reserves_last_step_for_submit(tmp_path):
     """The final step (MAX_STEPS-1) is reserved: tools narrow to submit_answer."""
-    from scroll_eval.base_agents.scroll_agent_A.agent import MAX_STEPS
+    from scroll_eval.base_agents.scroll_react.agent import MAX_STEPS
 
     search = _fake_response(
         blocks=[_fake_tool_call("execute_python", {"source": "print(1)"})],
@@ -307,7 +307,7 @@ def test_scroll_agent_reserves_last_step_for_submit(tmp_path):
 
 def test_scroll_agent_reserved_turn_salvages_text_when_still_no_submit(tmp_path):
     """If the model ignores submit-only on the reserved turn, salvage its text."""
-    from scroll_eval.base_agents.scroll_agent_A.agent import MAX_STEPS
+    from scroll_eval.base_agents.scroll_react.agent import MAX_STEPS
 
     search = _fake_response(
         blocks=[_fake_tool_call("execute_python", {"source": "print(1)"})],
@@ -326,7 +326,7 @@ def test_scroll_agent_reserved_turn_salvages_text_when_still_no_submit(tmp_path)
 def test_scroll_agent_reserved_turn_salvages_reasoning_when_text_empty(tmp_path):
     """Thinking mode: if the reserved turn yields only a thinking block (no submit,
     no visible text), salvage the reasoning so the answer isn't empty."""
-    from scroll_eval.base_agents.scroll_agent_A.agent import MAX_STEPS
+    from scroll_eval.base_agents.scroll_react.agent import MAX_STEPS
 
     search = _fake_response(
         blocks=[_fake_tool_call("execute_python", {"source": "print(1)"})],
@@ -347,7 +347,7 @@ def test_scroll_agent_reserved_turn_salvages_reasoning_when_text_empty(tmp_path)
 
 def test_scroll_agent_reserve_can_be_disabled(tmp_path, monkeypatch):
     """SCROLL_FORCE_FINAL_ANSWER=0 restores plain run-to-cap-and-stop-empty."""
-    from scroll_eval.base_agents.scroll_agent_A.agent import MAX_STEPS
+    from scroll_eval.base_agents.scroll_react.agent import MAX_STEPS
 
     monkeypatch.setenv("SCROLL_FORCE_FINAL_ANSWER", "0")
     model = AsyncMock()
@@ -500,7 +500,7 @@ def test_resolve_response_passthrough_on_chatresponse():
     `KeyError('__aiter__')`. Detection must not touch instance attributes.
     """
     from agentscope.model._model_response import ChatResponse
-    from scroll_eval.base_agents.scroll_agent_A.agent import _resolve_response
+    from scroll_eval.base_agents.scroll_react.agent import _resolve_response
 
     cr = ChatResponse(content=["x"], is_last=True)
     out = asyncio.run(_resolve_response(cr))  # must not raise
@@ -510,7 +510,7 @@ def test_resolve_response_passthrough_on_chatresponse():
 def test_resolve_response_collapses_stream_to_final_chunk():
     """A streamed async generator collapses to its terminal (is_last) chunk."""
     from agentscope.model._model_response import ChatResponse
-    from scroll_eval.base_agents.scroll_agent_A.agent import _resolve_response
+    from scroll_eval.base_agents.scroll_react.agent import _resolve_response
 
     async def _gen():
         yield ChatResponse(content=["delta"], is_last=False)
@@ -523,7 +523,7 @@ def test_resolve_response_collapses_stream_to_final_chunk():
 
 def test_scroll_agent_retries_transient_model_error(tmp_path, monkeypatch):
     """A transient model failure is retried, then the run completes normally."""
-    import scroll_eval.base_agents.scroll_agent_A.agent as agent_mod
+    import scroll_eval.base_agents.scroll_react.agent as agent_mod
 
     async def _no_sleep(_):  # don't actually back off in tests
         return None
@@ -545,7 +545,7 @@ def test_scroll_agent_retries_transient_model_error(tmp_path, monkeypatch):
 
 def test_scroll_agent_terminal_model_error_yields_error_trajectory(tmp_path, monkeypatch):
     """When retries are exhausted, the loop ends cleanly as ERROR (no exception)."""
-    import scroll_eval.base_agents.scroll_agent_A.agent as agent_mod
+    import scroll_eval.base_agents.scroll_react.agent as agent_mod
 
     async def _no_sleep(_):
         return None

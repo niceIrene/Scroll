@@ -55,7 +55,7 @@ _DEFAULT_JUDGE_WORKERS = 8
 
 
 # The base user-turn nudge appended to every LongMemEval question (ported from the
-# original Scroll LME prompts, with the ``rlm`` reference dropped since scroll_agent_A
+# original Scroll LME prompts, with the ``rlm`` reference dropped since scroll_react
 # does not bind it).
 _BASE_POSTSCRIPT = (
     "Write Python cells with `execute_python` to query and combine evidence "

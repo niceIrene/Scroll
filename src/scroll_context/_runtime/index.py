@@ -187,7 +187,7 @@ class EvictionIndex:
         — used to render a seeded prior-sessions map with its own wording.
         ``repl_name`` is the host's name for the Python REPL tool, so the
         recovery instructions name a tool that actually exists (``scroll_repl``
-        for OpenAI-format harnesses, ``execute_python`` for scroll_agent_A).
+        for OpenAI-format harnesses, ``execute_python`` for scroll_react).
         """
         lines = [
             header or (

@@ -75,7 +75,7 @@ def test_load_parses_agent_type_and_id(tmp_path):
     p.write_text(
         "agent:\n"
         "  type: base_agents\n"
-        "  id: scroll_agent_A\n"
+        "  id: scroll_react\n"
         "model:\n"
         "  endpoint: http://x\n"
         "  name: m\n"
@@ -85,7 +85,7 @@ def test_load_parses_agent_type_and_id(tmp_path):
     )
     cfg = config.load(p)
     assert cfg.agent.type == "base_agents"
-    assert cfg.agent.id == "scroll_agent_A"
+    assert cfg.agent.id == "scroll_react"
 
 
 def _minimal(extra: str = "") -> str:

@@ -1,9 +1,9 @@
-"""Standalone EdgeBench entrypoint for scroll_agent_A.
+"""Standalone EdgeBench entrypoint for scroll_react.
 
 EdgeBench (github.com/ByteDance-Seed/EdgeBench) launches agents as CLIs inside
 its work container: the harness writes the task prompt to /tmp/agent_prompt.md
 and executes the agent's ``run_cmd`` via ``/bin/bash -c`` in the task
-workspace. This module adapts scroll_agent_A's in-process ``run(task, ctx)``
+workspace. This module adapts scroll_react's in-process ``run(task, ctx)``
 loop to that contract: prompt file in, agent loop against the local workspace,
 trajectory artifacts out. Scoring is workspace-file based on the EdgeBench
 side (the agent runs ``sforge-submit`` via its ``bash`` tool, per the task
@@ -48,7 +48,7 @@ from typing import Any
 
 from opentelemetry import trace
 
-from scroll_eval.base_agents.scroll_agent_A import agent as scroll_agent
+from scroll_eval.base_agents.scroll_react import agent as scroll_agent
 from scroll_eval.types import TaskSpec, Trajectory
 
 
@@ -201,7 +201,7 @@ def _trajectory_json(trajectory: Trajectory) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="scroll-agent-a",
-        description="Run scroll_agent_A against the current workspace (EdgeBench entrypoint).",
+        description="Run scroll_react against the current workspace (EdgeBench entrypoint).",
     )
     parser.add_argument("prompt_file", nargs="?", default=None, help="Path to the task prompt file")
     parser.add_argument(
@@ -266,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
     from scroll_eval.types import LoopContext
 
     ctx = LoopContext(
-        llm_openai=None,  # scroll_agent_A uses the agentscope client only
+        llm_openai=None,  # scroll_react uses the agentscope client only
         llm_agentscope=_build_agentscope_model(model_name),
         model_name=model_name,
         # No TracerProvider is registered (we never call init_for_phoenix), so

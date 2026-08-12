@@ -39,7 +39,7 @@ def _fake_run_dir(tmp_path: Path, monkeypatch, *, tasks=("T1", "T2"), answered=N
         if name in answered:
             (run_dir / "tasks" / name / "answers.json").write_text("{}")
     (run_dir / "manifest.json").write_text(json.dumps({
-        "benchmark": "beam", "agent": {"type": "base_agents", "id": "scroll_agent_A"},
+        "benchmark": "beam", "agent": {"type": "base_agents", "id": "scroll_react"},
         "model": {"endpoint": "https://x/v1", "name": "big-model"},
         "tasks": list(tasks), "mean_reward": 0.9, "timestamp_utc": "t0",
     }))
@@ -67,7 +67,7 @@ def test_grade_run_rebuilds_summary_and_manifest(tmp_path: Path, monkeypatch) ->
     assert manifest["mean_reward"] == pytest.approx(0.6)        # recomputed
     assert manifest["judge"] == {"name": "small-judge"}          # stamped
     assert "regraded_utc" in manifest
-    assert manifest["agent"]["id"] == "scroll_agent_A"           # original fields kept
+    assert manifest["agent"]["id"] == "scroll_react"           # original fields kept
 
 
 def test_grade_run_skips_tasks_without_answers(tmp_path: Path, monkeypatch) -> None:

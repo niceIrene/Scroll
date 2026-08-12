@@ -47,9 +47,11 @@ def stdout_cap_for(history_max_tokens: int | None) -> int:
 class Executor:
     """Persistent Python execution against a shared namespace.
 
-    Compiles each cell with ``PyCF_ALLOW_TOP_LEVEL_AWAIT`` so the model can
-    write ``result = await bash("ls")`` at the top level without wrapping
-    every cell in an ``async def`` block. The compiled code is bound via
+    A typical cell is plain synchronous code against the namespace, e.g.
+    ``hits = ms.search('deploy key', scope='task')``. Each cell is compiled
+    with ``PyCF_ALLOW_TOP_LEVEL_AWAIT`` so a cell may also ``await`` a
+    host-injected async callable at the top level without wrapping itself in
+    an ``async def`` block. The compiled code is bound via
     ``types.FunctionType(code, ns)`` and called — when the source contains
     a top-level await, calling returns a coroutine we await; otherwise it
     returns None and the assignments have already happened in ``ns``.
@@ -57,8 +59,8 @@ class Executor:
     Each call captures stdout/stderr via ``redirect_stdout`` /
     ``redirect_stderr``. Any exception is formatted and returned in
     ``stderr``/``error``. Timeouts are enforced via ``asyncio.wait_for`` —
-    fine for the I/O-heavy use case (bash hops, ms queries) but cannot
-    interrupt a pure-Python tight loop.
+    fine for the I/O-heavy use case (awaited tool calls, ms queries) but
+    cannot interrupt a pure-Python tight loop.
     """
 
     def __init__(

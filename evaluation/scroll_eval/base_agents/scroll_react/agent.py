@@ -1,4 +1,4 @@
-"""scroll_agent_A — CodeAct-style ReAct with scroll context management.
+"""scroll_react — CodeAct-style ReAct with scroll context management.
 
 The model has three tools: ``execute_python`` (runs Python in a persistent
 namespace owned by the context manager's ``ScrollRuntime``), ``bash``
@@ -60,7 +60,7 @@ from scroll_eval._tools_common import (
     run_bash,
     select_tools,
 )
-from scroll_eval.base_agents.scroll_agent_A import prompts
+from scroll_eval.base_agents.scroll_react import prompts
 from scroll_context import ScrollContextManager
 from scroll_eval.tracing import otel
 from scroll_eval.types import LoopContext, Step, TaskSpec, TerminationReason, Trajectory
@@ -123,7 +123,7 @@ def _scroll_tools() -> list[dict]:
     """Default tool surface with a `timeout` param added to `bash`.
 
     Deep-copies the shared schema so the canonical ``_BASH_SCHEMA`` used by the
-    legacy agents stays byte-identical — only scroll_agent_A advertises the
+    legacy agents stays byte-identical — only scroll_react advertises the
     per-command timeout knob.
     """
     tools = [copy.deepcopy(t) for t in select_tools(DEFAULT_TOOLS)]

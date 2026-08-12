@@ -28,7 +28,7 @@ from scroll_eval.types import LoopContext, TaskSpec, Trajectory
 
 
 _DEFAULT_FAMILY = "base_agents"
-_DEFAULT_ID = "scroll_agent_A"
+_DEFAULT_ID = "scroll_react"
 
 
 def _budget_from_env() -> BudgetSpec | None:

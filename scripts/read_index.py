@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read back the headlines / index representations from a logged probe.
 
-A scroll_agent_A probe writes three files we can inspect:
+A scroll_react probe writes three files we can inspect:
 
   - ``call_messages.jsonl`` — the exact prompt dumped each turn. Line 0 is the
     (constant) system prompt, which carries the **seed map** (prior-session

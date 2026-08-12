@@ -14,7 +14,7 @@ name; ``ScrollContextManager.protocol_prompt()`` calls it with the manager's
 own settings, so a host's system prompt is *harness preamble +
 mgr.protocol_prompt() + harness finishing* and every prompt edit lands in one
 file. ``{repl}`` binds the host's REPL tool name (``scroll_repl`` for
-OpenAI-format harnesses, ``execute_python`` for scroll_agent_A). Templating is
+OpenAI-format harnesses, ``execute_python`` for scroll_react). Templating is
 a plain ``str.replace``, so other braces in the files (e.g. the literal
 ``{prose}`` FTS column filter in ``index.md``) pass through untouched.
 
@@ -47,7 +47,7 @@ def index_prompt(repl_name: str = "scroll_repl") -> str:
 # The `core.md` fragments that advertise the `headline` column (the `ms.search`
 # return-row shape, the routed-hit explanation, and the `ms.sql_query` column
 # list), with their index-off replacements. Byte-exact pairs —
-# `test_scroll_agent_A` fails loudly if a prompt edit breaks the match.
+# `test_scroll_react` fails loudly if a prompt edit breaks the match.
 HEADLINE_SCHEMA_FRAGMENTS = (
     ("kind, role, name, headline, snippet|content, has_code, via",
      "kind, role, name, snippet|content, has_code, via"),
@@ -89,7 +89,7 @@ def protocol_prompt(repl_name: str = "scroll_repl", *, index: bool = True) -> st
 
 
 # Convenience constant for OpenAI-format hosts: the default protocol
-# (core + index) under the `scroll_repl` tool name. scroll_agent_A instead
+# (core + index) under the `scroll_repl` tool name. scroll_react instead
 # calls `mgr.protocol_prompt()`, which binds `execute_python` and follows the
 # manager's own index flag.
 SCROLL_PROMPT_PROTOCOL = protocol_prompt("scroll_repl")

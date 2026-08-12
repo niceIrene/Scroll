@@ -102,10 +102,10 @@ def test_run_propagates_agent_type_and_id_to_env(tmp_path: Path, monkeypatch):
         return 0
     monkeypatch.setattr(runner, "_invoke_harbor", fake_invoke)
     monkeypatch.setenv("K", "fake-key")
-    cfg = _cfg(["t1"], agent_type="base_agents", agent_id="scroll_agent_A")
+    cfg = _cfg(["t1"], agent_type="base_agents", agent_id="scroll_react")
     runner.run(cfg, agent="scroll-eval", runs_root=tmp_path)
     assert captured["env"]["SCROLL_AGENT_TYPE"] == "base_agents"
-    assert captured["env"]["SCROLL_AGENT_ID"] == "scroll_agent_A"
+    assert captured["env"]["SCROLL_AGENT_ID"] == "scroll_react"
     assert "scroll_eval.runner:ScrollEvalAgent" in captured["cmd"]
 
 

@@ -1,7 +1,7 @@
 # Local Terminal-Bench config.
 # Use --task for a specific task, --all-tasks for the full local dataset, and
 # --sandbox-type/--parallelism for backend selection.
-agent: { type: base_agents, id: scroll_agent_A }
+agent: { type: base_agents, id: scroll_react }
 model:
   endpoint: ${OPENAI_BASE_URL}
   name: ${OPENAI_MODEL_NAME}
