@@ -49,9 +49,26 @@ runs/                        Run outputs (gitignored).
 
 ## Quick start
 
+### Setting up the BEAM experiment
+
 ```bash
+git submodule update --init --progress external/beam
+#  The BEAM repo is ~700 MB, so it will take some time to download
+
 uv sync --all-packages --all-extras   # package + evaluation project
 
+# Put your Model endpoint/key into .env.local
+touch .env.local
+
+# Materialize the BEAM tasks into local-tasks/beam/ (gitignored, so this
+# must be run once per clone). Reads external/beam/chats/<scale>;
+# --scale picks the tier (100K default; also 500K, 1M, 10M).
+uv run python scripts/migrate_beam.py --scale 100K
+```
+
+### Running
+
+```bash
 # BEAM (long-term memory): ingest + run + judge, per configs/beam.yaml
 uv run scroll-eval beam configs/beam.yaml
 
@@ -77,21 +94,27 @@ instance).
 from scroll_context import ScrollContextManager, SCROLL_REPL_TOOL_SCHEMA
 
 mgr = ScrollContextManager(
-    history_db_path="history.db", session_id="run1:task1",
-    history_max_tokens=100_000, pinned=2, repl_name="scroll_repl",
+    history_db_path="history.db",
+    session_id="run1:task1",
+    history_max_tokens=100_000,
+    pinned=2,
+    repl_name="scroll_repl",
 )
-system = {"role": "system", "content": PREAMBLE + mgr.protocol_prompt() + FINISH}
+system = {
+    "role": "system",
+    "content": PREAMBLE + mgr.protocol_prompt() + FINISH,
+}
 messages = [system, {"role": "user", "content": task}]
 mgr.record_initial_prompt(messages[1])
 
 while not done:
-    mgr.manage(messages)                                  # age + evict + map
-    call = messages + [mgr.digest_message()]              # ephemeral digest
+    mgr.manage(messages)  # age + evict + map
+    call = messages + [mgr.digest_message()]  # ephemeral digest
     assistant = llm(call, tools=[SCROLL_REPL_TOOL_SCHEMA, ...])
     messages.append(assistant)
     mgr.record_assistant_turn(assistant, usage=...)
     if repl_call(assistant):
-        out = mgr.execute_python(source_of(assistant))    # ms.* available
+        out = mgr.execute_python(source_of(assistant))  # ms.* available
         tool_msg = {"role": "tool", "tool_call_id": ..., "content": out}
         messages.append(tool_msg)
         mgr.record_tool_result(tool_msg, tool_name="scroll_repl")
