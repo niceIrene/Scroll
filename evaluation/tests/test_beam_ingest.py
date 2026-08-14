@@ -213,10 +213,12 @@ def test_shared_db_probes_isolated_by_run_id(tmp_path: Path) -> None:
     ms_b = MemorySpace(history_db_path=shared, session_id=f"b:{task_id}",
                        task_id=task_id, shared_run_ids=(SEED_RUN_ID,))
 
-    # Each probe sees its OWN write but NOT the sibling's.
-    assert ms_a.search("LEAKMARKER_A", scope="task", k=5)
+    # Each probe sees its OWN write (include_self=True: these are the live
+    # session's own model_turn rows, self-excluded from discovery by default)
+    # but NOT the sibling's.
+    assert ms_a.search("LEAKMARKER_A", scope="task", k=5, include_self=True)
     assert ms_a.search("LEAKMARKER_B", scope="task", k=5) == []
-    assert ms_b.search("LEAKMARKER_B", scope="task", k=5)
+    assert ms_b.search("LEAKMARKER_B", scope="task", k=5, include_self=True)
     assert ms_b.search("LEAKMARKER_A", scope="task", k=5) == []
 
     # Both still retrieve the SHARED seed tier (the prior conversation).

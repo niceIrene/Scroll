@@ -187,6 +187,12 @@ def beam(
              "(sets SCROLL_EVICTION_INDEX and SCROLL_SEED_INDEX). Use --no-index "
              "for the index-off ablation. Omit to use the env/defaults (both on).",
     ),
+    var_context: Optional[bool] = typer.Option(
+        None, "--var-context/--no-var-context",
+        help="Curated Python-variable context instead of verbatim replay past "
+             "the last N turns (sets SCROLL_VAR_CONTEXT). Omit to use the "
+             "env/default (off).",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output."),
 ) -> None:
     """Run the BEAM long-term-memory benchmark natively (no Harbor sandbox)."""
@@ -231,6 +237,10 @@ def beam(
     if index is not None:
         os.environ["SCROLL_EVICTION_INDEX"] = "1" if index else "0"
         os.environ["SCROLL_SEED_INDEX"] = "1" if index else "0"
+    # Var-context toggle: same left-as-None-preserves-env/default pattern as
+    # --index/--no-index above.
+    if var_context is not None:
+        os.environ["SCROLL_VAR_CONTEXT"] = "1" if var_context else "0"
     cfg = cfg_mod.load(config_path)
     if scale is not None:
         tier = scale.upper()
@@ -288,6 +298,12 @@ def longmemeval(
         help="Enable BOTH the headline eviction index and the seed map "
              "(sets SCROLL_EVICTION_INDEX and SCROLL_SEED_INDEX). Omit for defaults (both on).",
     ),
+    var_context: Optional[bool] = typer.Option(
+        None, "--var-context/--no-var-context",
+        help="Curated Python-variable context instead of verbatim replay past "
+             "the last N turns (sets SCROLL_VAR_CONTEXT). Omit to use the "
+             "env/default (off).",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output."),
 ) -> None:
     """Run the LongMemEval memory benchmark natively (no Harbor sandbox)."""
@@ -307,6 +323,8 @@ def longmemeval(
     if index is not None:
         os.environ["SCROLL_EVICTION_INDEX"] = "1" if index else "0"
         os.environ["SCROLL_SEED_INDEX"] = "1" if index else "0"
+    if var_context is not None:
+        os.environ["SCROLL_VAR_CONTEXT"] = "1" if var_context else "0"
 
     cfg = cfg_mod.load(config_path)
     if all_tasks:

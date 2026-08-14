@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import sqlite3
 from pathlib import Path
@@ -39,6 +40,18 @@ def _fts_sanitize(query: str) -> str:
 # and 300 chars is enough to recognize a turn; halving from 600 measurably cuts
 # per-observation replay cost on big-turn corpora without changing the flow.
 _SEARCH_PREVIEW_CHARS = 300
+
+
+# Per-row display date surfaced on search/expand hits: the conversation's own
+# ISO date when the history records one (seed ingestion stores it as
+# metadata.date — see evals/beam/ingest.py), else the day the row was written.
+# A structured field so temporal triage (sorting, before/after comparison) is
+# plain code over hits, not parsing of content prefixes — agent-written rows
+# carry no in-content date tag at all.
+_DATE_SQL = (
+    "COALESCE(json_extract({p}metadata, '$.date'), "
+    "substr({p}created_at, 1, 10)) AS date"
+)
 
 
 def _preview_hits(rows: list[dict], chars: int | None) -> list[dict]:
@@ -113,17 +126,38 @@ _SNIPPET_LIKE_CHARS = 160
 
 # BM25 column weights for (prose, code, headline). Prose dominates rank; code
 # still contributes a little when search_code=True so a code-only hit can
-# surface. The headline weight only matters for the headline-scoped sub-query
-# (column filters keep the paths separate).
+# surface. The headline weight only matters for the headline-scoped
+# sub-query the router issues (column filters keep the paths separate).
 _BM25_WEIGHTS = (10.0, 0.5, 5.0)
 
-# Fusion / auto-broaden knobs for `search`.
-_RRF_K = 60                 # reciprocal-rank-fusion constant
-_HEADLINE_CAP_FRACTION = 2  # at most k/2 headline-only hits in a fused result
-_BROADEN_MIN_HITS = 3       # exact hits below this trigger the OR fallback
-_ROUTE_TURNS_PER_SESSION = 2  # headline-routed turn rows surfaced per session
+# OR-recall knobs for `search`.
 _BROADEN_CANDIDATE_MULT = 3 # OR candidates fetched per k before reranking
-_FTS_STOP_TOKENS = {"OR", "AND", "NOT", "NEAR", "the", "and", "for", "with", "from"}
+_MIN_CORPUS_FOR_DF_PRUNE = 100  # adaptive common-term drop needs a real corpus
+
+# Headline-router knobs (see the "2) Headline ROUTER" block in _search_impl).
+_HEADLINE_CAP_FRACTION = 2  # at most k/2 headline-routed hits in a fused result
+_ROUTE_TURNS_PER_SESSION = 2  # headline-routed turn rows surfaced per session
+
+# The live session's SCAFFOLDING kinds — the agent's own reasoning artifacts
+# (thoughts, tool outputs, the task restatement). Excluded from relevance-
+# ranked *discovery* (search/LIKE) by default: they restate the query's
+# vocabulary by construction, crowd out corpus rows, and echo the model's own
+# hypotheses back as pseudo-evidence. NEVER excluded from addressed lookups
+# (expand / seq ranges / raw SQL) — every recovery pointer must resolve — and
+# the session's user turns and turn/session records stay searchable, which is
+# what keeps in-session discovery working in multi-turn hosts.
+_SELF_SCAFFOLD_KINDS = ("model_turn", "tool_result", "tool_call", "task")
+
+# Lucene's classic English stop set. FTS5 has no analyzer-level stopword
+# removal, and in a plain query every bare token is a hard AND requirement —
+# so "error with pyserini" misses a turn saying "error: pyserini not found"
+# purely because of "with". Used to drop stopwords from bag-of-words AND
+# queries (_prune_and_terms) and to skip them when building OR expressions
+# (_broaden_tokens).
+_EN_STOPWORDS = frozenset(
+    "a an and are as at be but by for if in into is it no not of on or "
+    "such that the their then there these they this to was will with".split()
+)
 
 
 def _broaden_tokens(query: str) -> list[str]:
@@ -131,37 +165,65 @@ def _broaden_tokens(query: str) -> list[str]:
     toks = re.findall(r"[A-Za-z][A-Za-z']{2,}|\d{2,}", query)
     out: list[str] = []
     for t in toks:
-        if t in _FTS_STOP_TOKENS or t.lower() in _FTS_STOP_TOKENS:
+        if t in _FTS_OPERATORS or t.lower() in _EN_STOPWORDS:
             continue
         if t not in out:
             out.append(t)
     return out
 
 
-def _rrf_fuse(primary: list[dict], secondary: list[dict], *, cap_secondary: int) -> list[dict]:
-    """Reciprocal-rank fusion of two ranked row lists keyed by ``seq``.
+def _idf(n_docs: int, df: int) -> float:
+    """Lucene-style BM25 IDF: ``log(1 + (N - df + .5)/(df + .5))``.
 
-    Rows in both lists get ``via='both'``; secondary-only rows keep their own
-    ``via`` and are capped at ``cap_secondary`` so a short-field match (headlines
-    score high under BM25 length normalization) can't swamp the exact hits.
+    Always positive — unlike the classic form FTS5's ``bm25()`` uses, which
+    goes negative for terms present in more than half the corpus. Weights
+    OR-recall candidates by term rarity so one match on a discriminative
+    identifier outranks several matches on near-ubiquitous words.
     """
-    scores: dict[int, float] = {}
-    rows: dict[int, dict] = {}
-    for rank, r in enumerate(primary):
-        scores[r["seq"]] = scores.get(r["seq"], 0.0) + 1.0 / (_RRF_K + rank)
-        rows.setdefault(r["seq"], r)
-    n_secondary = 0
-    for rank, r in enumerate(secondary):
-        if r["seq"] in rows:
-            rows[r["seq"]]["via"] = "both"
-            scores[r["seq"]] += 1.0 / (_RRF_K + rank)
+    if n_docs <= 0:
+        return 1.0
+    return math.log(1.0 + (n_docs - df + 0.5) / (df + 0.5))
+
+
+# A bare word / prefix term. A query part that isn't one (operator, quoted
+# phrase, parenthesis, column filter, punctuation) marks a structured FTS5
+# query that _prune_and_terms must pass through verbatim.
+_BARE_TOKEN_RE = re.compile(r"[A-Za-z0-9_']+\*?")
+
+
+def _prune_and_terms(query: str, dfs: dict[str, int], n_docs: int) -> str:
+    """Drop recall-killing tokens from a plain bag-of-words AND query.
+
+    FTS5 has no analyzer: each bare token is a hard AND requirement, so a
+    stopword ("of", "with") or a corpus-ubiquitous term (df > N/2 — which
+    also scores *negative* IDF under FTS5's classic ``bm25()``) can veto
+    turns that match every discriminative term. Lucene strips stopwords in
+    its analyzer; this is the query-time equivalent. Structured queries pass
+    through verbatim, as does the query when pruning would drop every token.
+    The df-based drop only runs on corpora big enough for df to mean
+    anything (``_MIN_CORPUS_FOR_DF_PRUNE``).
+    """
+    parts = query.split()
+    if len(parts) < 2:
+        return query
+    for p in parts:
+        if p.upper() in _FTS_OPERATORS or not _BARE_TOKEN_RE.fullmatch(p):
+            return query
+    kept: list[str] = []
+    for p in parts:
+        if p.lower() in _EN_STOPWORDS:
             continue
-        if n_secondary >= cap_secondary:
+        df = dfs.get(p.lower())
+        if (df is not None and n_docs >= _MIN_CORPUS_FOR_DF_PRUNE
+                and df > n_docs // 2):
             continue
-        n_secondary += 1
-        scores[r["seq"]] = 1.0 / (_RRF_K + rank)
-        rows[r["seq"]] = r
-    return [rows[s] for s in sorted(scores, key=lambda s: -scores[s])]
+        kept.append(p)
+    return " ".join(kept) if kept else query
+
+
+def _match_cols(*, search_code: bool, code_only: bool) -> str:
+    """The FTS5 column set a search is scoped to (see ``_scoped_match``)."""
+    return "code" if code_only else ("prose code" if search_code else "prose")
 
 
 def _scoped_match(query: str, *, search_code: bool, code_only: bool) -> str:
@@ -174,8 +236,36 @@ def _scoped_match(query: str, *, search_code: bool, code_only: bool) -> str:
     snippet"). The user expression is parenthesised so OR/phrase grouping is
     preserved under the column filter.
     """
-    cols = "code" if code_only else ("prose code" if search_code else "prose")
+    cols = _match_cols(search_code=search_code, code_only=code_only)
     return f"{{{cols}}} : ({query})"
+
+
+class ResultRows(list):
+    """A plain list of row dicts, tagged with the ``ms`` call that produced it.
+
+    Behaves exactly like a ``list`` everywhere; the extra ``provenance`` string
+    lets context tooling — the var-context changelog and variable digest — say
+    HOW a stored variable's data was obtained without the model restating it.
+    Deliberately compact: op + row count + derived completeness facts
+    (snippets vs full text, k-saturation, row-cap), NOT the query text — the
+    exact query/SQL is persisted verbatim with the producing turn
+    (``tool_input`` on its ``conversation_history`` row), so the context
+    carries a seq pointer to it instead of a lossy gist. Slicing/copying
+    returns a plain list and drops the tag (best-effort by design).
+    """
+
+    provenance: str | None = None
+    # Out-of-band truncation contract for sql_query (never an in-band marker
+    # row — see sql_query's docstring for why): True when the row cap dropped
+    # matching rows beyond the first ``row_cap``.
+    truncated: bool = False
+    row_cap: int | None = None
+
+
+def _tag_rows(rows: list, provenance: str) -> "ResultRows":
+    out = ResultRows(rows)
+    out.provenance = provenance
+    return out
 
 
 def _to_seq_list(x) -> list[int]:
@@ -243,9 +333,20 @@ class MemorySpace:
         # (`hist`), split by read route — FTS keyword search, seq/structured
         # query, and the LIKE fallback scan. Exposed via stats() and emitted as
         # span events so each interaction is visible in Phoenix.
+        # Per-call derived-fact strings ("search → 15 hits (snippets)") since
+        # the last drain. The same facts ride on each returned ResultRows, but
+        # that value-carried channel dies under accumulation idioms
+        # (`hits += ms.search(...)` yields a plain list) — this buffer is the
+        # idiom-independent floor the var-context changelog drains per turn.
+        # Capped so a consumer that never drains can't grow it unboundedly.
+        self._op_log: list[str] = []
         self._stats = {
             "hist_fts": 0, "hist_seq": 0, "hist_scan": 0,
         }
+        # Per-token document frequencies, keyed (column-scope, token). History
+        # only grows, so a cached df is at worst slightly stale — fine for the
+        # ranking/pruning it feeds (see _doc_freqs).
+        self._df_cache: dict[tuple[str, str], int] = {}
         if history_db_path is not None:
             abs_path = Path(history_db_path).expanduser().resolve()
             self._conn.execute(
@@ -262,9 +363,22 @@ class MemorySpace:
         """The current task id — scopes ``hist`` across ALL runs of this task."""
         return self._task_id
 
+    @property
+    def row_cap(self) -> int:
+        return self._row_cap
+
     def stats(self) -> dict:
         """Interaction counts: hist_fts/seq/scan (the hist read routes)."""
         return dict(self._stats)
+
+    def _log_op(self, prov: str) -> None:
+        if len(self._op_log) < 512:
+            self._op_log.append(prov)
+
+    def drain_op_log(self) -> list[str]:
+        """The derived-fact strings of every op since the last drain (and reset)."""
+        ops, self._op_log = self._op_log, []
+        return ops
 
     @staticmethod
     def _classify(sql: str) -> str:
@@ -292,38 +406,52 @@ class MemorySpace:
     def sql_query(self, sql: str, params: tuple | dict | None = None) -> list[dict]:
         """Run a read query over ``hist.conversation_history``. Returns ≤ row_cap rows.
 
-        Rows come back as plain dicts. If more than ``row_cap`` rows match, only
-        the first ``row_cap`` are returned plus a trailing ``_truncated`` marker.
-        Writes are not supported — ``hist`` is read-only; keep working data in
-        Python variables in your ``execute_python`` namespace instead.
+        Rows come back as plain dicts — DATA rows only. Truncation at the row
+        cap is signaled out-of-band, never inside the data: an earlier design
+        appended an in-band marker row, whose empty-string values poisoned
+        every typed operation over a column (``sorted(set(r['step_index'] …))``
+        → TypeError int-vs-str; ``min(dates)`` silently returned ``""``). Now a
+        capped result carries ``rows.truncated == True`` / ``rows.row_cap``,
+        its provenance/ops string says ``(row-capped)``, and the REPL
+        observation gets a same-turn ``[note]`` appended by the context
+        manager — the data itself stays computable. An exactly-``row_cap``-
+        sized result is the in-data tell. Writes are not supported — ``hist``
+        is read-only; keep working data in Python variables instead.
         """
         cur = self._conn.execute(sql, params or ())
         rows: list[dict] = []
+        truncated = False
         for i, row in enumerate(cur):
             if i >= self._row_cap:
-                # Shape-compatible truncation marker: carry the SAME keys as the
-                # data rows (empty strings) so `for r in rows: r["seq"] …` loops
-                # don't KeyError on it — a recurring source of wasted agent turns
-                # — with the notice in the first column so it still surfaces in
-                # any printed view. `_truncated`/`_row_cap` stay for explicit
-                # checks (documented behavior).
-                marker: dict = {k: "" for k in rows[-1]} if rows else {}
-                first_col = next(iter(marker), None)
-                if first_col is not None:
-                    marker[first_col] = (
-                        f"[truncated: only the first {self._row_cap} matching rows "
-                        "are returned — narrow the query with WHERE, or page with "
-                        "LIMIT/OFFSET]"
-                    )
-                marker["_truncated"] = True
-                marker["_row_cap"] = self._row_cap
-                rows.append(marker)
+                truncated = True
                 break
             rows.append({k: row[k] for k in row.keys()})
         self._record(sql, rows=len(rows))
-        return rows
+        prov = f"sql_query → {len(rows)} rows" + (" (row-capped)" if truncated else "")
+        self._log_op(prov)
+        out = _tag_rows(rows, prov)
+        out.truncated = truncated
+        out.row_cap = self._row_cap
+        return out
 
-    def search(
+    def search(self, query: str, **kwargs) -> list[dict]:
+        """Full-text search over ``hist.conversation_history`` — see
+        :meth:`_search_impl` for the full contract (this wrapper only tags the
+        returned rows with a provenance string for the var-context tooling).
+        By default the live session's own scaffolding (thoughts, tool outputs)
+        is NOT searched — pass ``include_self=True`` to opt back in."""
+        rows = self._search_impl(query, **kwargs)
+        # Derived reuse facts: search rows are LOSSY (match-centred snippets /
+        # truncated previews, never quotable full text), and a result that
+        # fills k is saturated — more may match than were returned.
+        flags = ["snippets"]
+        if len(rows) >= int(kwargs.get("k", 10) or 10):
+            flags.append("k-saturated")
+        prov = f"search → {len(rows)} hits ({', '.join(flags)})"
+        self._log_op(prov)
+        return _tag_rows(rows, prov)
+
+    def _search_impl(
         self,
         query: str,
         *,
@@ -335,17 +463,22 @@ class MemorySpace:
         code_only: bool = False,
         step_range: tuple[int, int] | None = None,
         msg_range: tuple[int, int] | None = None,
+        seq_range: tuple[int, int] | None = None,
         steps: Iterable[int] | None = None,
         seqs: Iterable[int] | None = None,
         chars: int | None = _SEARCH_PREVIEW_CHARS,
+        include_self: bool = False,
     ) -> list[dict]:
         """Full-text search over ``hist.conversation_history`` (FTS5).
 
-        Returns up to ``k`` rows ``{seq, step_index, kind, role, name, headline,
-        content, has_code, via[, broadened]}`` ranked by relevance (bm25) —
-        ``role`` and ``headline`` let the model judge a hit (and locate its
-        milestone) without a second query. ``query`` is an FTS5 match expression
-        (plain words, phrases ``"..."``, ``OR``, prefix ``term*``).
+        Returns up to ``k`` rows ``{seq, step_index, date, kind, role, name,
+        headline, content, has_code, via[, broadened]}`` ranked by relevance
+        (bm25) — ``role`` and ``headline`` let the model judge a hit (and locate
+        its milestone) without a second query; ``date`` is the turn's own ISO
+        date when the history records one (metadata ``date``, else the write
+        day), directly sortable/comparable against a question's dates. ``query``
+        is an FTS5 match expression (plain words, phrases ``"..."``, ``OR``,
+        prefix ``term*``).
 
         Two recall layers beyond the plain prose match:
         - ``via``: ``'prose'`` = the turn's text matched; ``'headline'`` = the
@@ -356,11 +489,17 @@ class MemorySpace:
           text); the summary is provenance, not content. When more sessions
           matched than could be surfaced, the last routed row's marker lists
           them for sweeping. ``'both'`` = prose-matched and routed.
-        - ``broadened: True``: the exact query returned fewer than
-          ``_BROADEN_MIN_HITS`` rows, so it was automatically retried with
-          OR-joined terms; these extra rows are ranked by how many of the
-          original terms they contain. Treat them as leads to verify, not
-          confirmed matches.
+        - ``broadened: True``: the exact (AND) query left free result slots,
+          so it was also retried with OR-joined terms; these extra rows are
+          ranked by rarity-weighted coverage of the original terms (per-term
+          IDF, so a discriminative term counts for more than a common one).
+          Treat them as leads to verify, not confirmed matches.
+
+        Plain bag-of-words queries are additionally pruned of stopwords and
+        corpus-ubiquitous terms before the exact pass — each bare token is a
+        hard AND requirement in FTS5, so ``error with pyserini`` would
+        otherwise miss a turn saying "error: pyserini not found". Structured
+        queries (phrases, operators, column filters) are never rewritten.
 
         Code blocks are indexed in a **separate column** from prose and the
         search is scoped to prose by default, so code tokens never inflate BM25
@@ -406,7 +545,8 @@ class MemorySpace:
         if not self._fts_available():
             # No FTS5 in this SQLite build — degrade to a LIKE scan.
             sql, params, rows = self._search_like(
-                query, scope, kind, int(k), snippet, step_range, msg_range, steps, seqs
+                query, scope, kind, int(k), snippet, step_range, msg_range, steps, seqs,
+                include_self=include_self, seq_range=seq_range,
             )
             self._record(sql, rows=len(rows))
             return _preview_hits(rows, chars)
@@ -439,12 +579,30 @@ class MemorySpace:
         if msg_range is not None:
             filters.append("ch.msg_index BETWEEN ? AND ?")
             fparams.extend([int(msg_range[0]), int(msg_range[1])])
+        if seq_range is not None:
+            # The map's native coordinate: bound a keyword search to any index
+            # line's span (chunk or single) — the ranked, hygienic, previewed
+            # alternative to a raw FTS sub-select over BETWEEN.
+            filters.append("ch.seq BETWEEN ? AND ?")
+            fparams.extend([int(seq_range[0]), int(seq_range[1])])
         if steps is not None:
             filters.append(f"ch.step_index IN ({','.join('?' * len(steps))})")
             fparams.extend(steps)
         if seqs is not None:
             filters.append(f"ch.seq IN ({','.join('?' * len(seqs))})")
             fparams.extend(seqs)
+        # Scaffolding exclusion (see _SELF_SCAFFOLD_KINDS). Skipped when the
+        # caller explicitly targets a scaffold kind — that is unambiguous
+        # self-intent and silently returning [] would be a trap.
+        if (
+            not include_self
+            and self._session_id
+            and kind not in _SELF_SCAFFOLD_KINDS
+        ):
+            ph = ",".join("?" * len(_SELF_SCAFFOLD_KINDS))
+            filters.append(f"NOT (ch.session_id = ? AND ch.kind IN ({ph}))")
+            fparams.append(self._session_id)
+            fparams.extend(_SELF_SCAFFOLD_KINDS)
         # snippet() centres a short excerpt on the match: col 0 is `prose`, col 1
         # `code`. Non-snippet hits return prose (code elided to ‹code› markers)
         # as `content`, with has_code flagging turns whose code is retrievable.
@@ -456,7 +614,8 @@ class MemorySpace:
         )
         w_prose, w_code, w_head = _BM25_WEIGHTS
         select_cols = (
-            f"SELECT ch.seq, ch.step_index, ch.kind, ch.role, ch.name, "
+            f"SELECT ch.seq, ch.step_index, {_DATE_SQL.format(p='ch.')}, "
+            f"ch.kind, ch.role, ch.name, "
             f"ch.headline, {text_col}, ch.prose AS _prose, ch.session_id AS _sid, "
             f"(ch.code IS NOT NULL AND ch.code != '') AS has_code "
             f"FROM hist.{fts} JOIN hist.conversation_history ch "
@@ -489,10 +648,23 @@ class MemorySpace:
                 out.append(row)
             return out
 
-        # 1) Exact match, scoped to prose (or code) as before; on an FTS syntax
-        # error retry once with each term phrase-quoted (literal punctuation).
+        # 1) Exact match — after Lucene-style query hygiene: stopwords and
+        # corpus-ubiquitous terms are pruned from plain bag-of-words queries
+        # (every bare token is a hard AND veto in FTS5 — see _prune_and_terms)
+        # so a meaningless word can't exclude the turns that match every
+        # discriminative term. On an FTS syntax error retry once with each
+        # term phrase-quoted (literal punctuation).
         effective_query = query
-        exact = _run(_scoped_match(query, search_code=search_code, code_only=code_only), int(k), "prose")
+        cols = _match_cols(search_code=search_code, code_only=code_only)
+        prune_toks = _broaden_tokens(query)
+        n_docs, dfs = 0, {}
+        if prune_toks:
+            n_docs, dfs = self._doc_freqs(prune_toks, cols=cols)
+        exact = _run(
+            _scoped_match(_prune_and_terms(query, dfs, n_docs),
+                          search_code=search_code, code_only=code_only),
+            int(k), "prose",
+        )
         if exact is None:
             effective_query = _fts_sanitize(query)
             exact = _run(
@@ -504,6 +676,7 @@ class MemorySpace:
                 sql, params, rows = self._search_like(
                     query, scope, kind, int(k),
                     search_code=search_code, code_only=code_only,
+                    include_self=include_self, seq_range=seq_range,
                 )
                 self._record(sql, rows=len(rows))
                 return _preview_hits(rows, chars)
@@ -517,14 +690,14 @@ class MemorySpace:
         #     12-word field over-rewards a single rare term), then by how many
         #     of the session's headlines matched, then first-seen BM25 order;
         #   stage 2 (capped, <=_ROUTE_TURNS_PER_SESSION rows per session,
-        #     <=k/2 routed rows total): search the query WITHIN each top
-        #     session's turns — strict AND first, then OR reranked by matched-
-        #     term count — and surface honest turn rows (their own seq and
-        #     snippet), marked `⟦via summary of S<n>: …⟧`. If nothing in the
-        #     span matches any term, fall back to the session's opening turn as
-        #     an explicitly-marked low-confidence lead. The last routed row's
-        #     marker lists matched-but-unsurfaced sessions so aggregation
-        #     questions can sweep them by step_index.
+        #     <=k/_HEADLINE_CAP_FRACTION routed rows total): search the query
+        #     WITHIN each top session's turns — strict AND first, then OR
+        #     reranked by matched-term count — and surface honest turn rows
+        #     (their own seq and snippet), marked `⟦via summary of S<n>: …⟧`.
+        #     If nothing in the span matches any term, fall back to the
+        #     session's opening turn as an explicitly-marked low-confidence
+        #     lead. The last routed row's marker lists matched-but-unsurfaced
+        #     sessions so aggregation questions can sweep them by step_index.
         routed: list[dict] = []
         overflow_note = ""
         route_toks = [] if code_only else _broaden_tokens(effective_query)
@@ -570,7 +743,8 @@ class MemorySpace:
                     # its summary but no turn contains any query term — surface
                     # its opening turn as a marked low-confidence lead.
                     op = self._conn.execute(
-                        "SELECT seq, step_index, kind, role, name, headline, "
+                        "SELECT seq, step_index, "
+                        + _DATE_SQL.format(p="") + ", kind, role, name, headline, "
                         "prose AS content, prose AS _prose, session_id AS _sid, "
                         "(code IS NOT NULL AND code != '') AS has_code "
                         "FROM hist.conversation_history WHERE session_id = ? "
@@ -600,9 +774,9 @@ class MemorySpace:
         # Routed rows are ADDITIVE leads, not competitors: they must never
         # displace an exact prose hit from the top-k (the replay gate showed
         # displacement costs golden-turn coverage), and they must not suppress
-        # the broaden fallback (whose trigger counts EXACT hits only, below).
-        # A routed row duplicating an exact hit upgrades it to via='both' and
-        # donates its provenance marker instead of appearing twice.
+        # the broaden fallback below. A routed row duplicating an exact hit
+        # upgrades it to via='both' and donates its provenance marker instead
+        # of appearing twice.
         fused = list(exact)
         exact_by_seq = {r["seq"]: r for r in fused}
         routed_extra: list[dict] = []
@@ -615,29 +789,33 @@ class MemorySpace:
             else:
                 routed_extra.append(r)
 
-        # 3) Auto-broaden on thin results: a bare multi-word query is an implicit
-        # AND, and trajectories show thin AND results trigger multi-turn manual
-        # rewording chains (or give-ups). Retry in-call with OR-joined terms,
-        # rerank by how many distinct original terms each candidate actually
-        # contains (pure OR ranks common-token turns too high), and mark the
-        # extras `broadened=True` so the model treats them as leads.
+        # 3) OR recall layer — always on when the AND pass leaves free slots. A
+        # bare multi-word query is an implicit AND: one term the answering turn
+        # lacks excludes it entirely, and a thin-but-nonempty AND result used
+        # to suppress this retry (old <3-hit gate), silently hiding the miss.
+        # OR-matched candidates are reranked by rarity-weighted term coverage
+        # — per-term Lucene-style IDF from the index, so a match on a
+        # discriminative identifier outranks several near-ubiquitous-word
+        # matches (pure OR bm25 ranks common-token turns too high) — and
+        # marked `broadened=True` so the model treats them as leads. Exact
+        # hits keep the top slots: they matched every term and must never be
+        # displaced (replay gate). Headline-routed leads are excluded from the
+        # candidate pool — the router already owns headline-vocabulary recall.
         exact_seqs = {r["seq"] for r in exact}
-        if len(exact_seqs) < _BROADEN_MIN_HITS and " OR " not in query.upper():
+        if len(exact) < int(k) and " OR " not in query.upper():
             toks = _broaden_tokens(effective_query)
             if len(toks) >= 2:
+                n_docs, dfs = self._doc_freqs(toks, cols=cols)
                 or_expr = or_terms(toks)
-                # Prose-only: headline recall is the router's job (stage 1/2
-                # above); a headline OR-match here would just re-surface the
-                # boundary rows the router deliberately does not return.
                 b_prose = _run(
                     _scoped_match(or_expr, search_code=search_code, code_only=code_only),
                     int(k) * _BROADEN_CANDIDATE_MULT, "prose",
                 ) or []
                 low = [t.lower() for t in toks]
 
-                def _term_hits(row: dict) -> int:
+                def _term_score(row: dict) -> float:
                     text = ((row.get("_prose") or "") + " " + (row.get("headline") or "")).lower()
-                    return sum(1 for t in low if t in text)
+                    return sum(_idf(n_docs, dfs.get(t, 0)) for t in low if t in text)
 
                 routed_extra_seqs = {r["seq"] for r in routed_extra}
                 candidates = [
@@ -652,7 +830,7 @@ class MemorySpace:
                     seen.add(r["seq"])
                     r["broadened"] = True
                     deduped.append(r)
-                deduped.sort(key=_term_hits, reverse=True)  # stable: keeps bm25 order within ties
+                deduped.sort(key=_term_score, reverse=True)  # stable: keeps bm25 order within ties
                 fused = fused + deduped[: int(k) - len(fused)]
 
         # Prose-ranked results (exact + broadened) own the k slots; routed
@@ -690,7 +868,9 @@ class MemorySpace:
         hits (``ms.expand(hits)``), a chosen subset
         (``ms.expand([h["seq"] for h in hits if …])``), a literal list
         (``ms.expand([175, 1887])``), or a single seq — all work. Returns the rows
-        ``{seq, step_index, kind, role, name, headline, content}`` where ``content``
+        ``{seq, step_index, date, kind, role, name, headline, content}`` where
+        ``date`` is the turn's own ISO date when the history records one (your
+        own rows: the write date) and ``content``
         is the full untruncated prose (code elided to ``‹code›`` markers unless
         ``code=True`` adds a ``code`` field) — keep them in a variable, never
         re-expand the same ``seq``. Rows come back in ``seq`` order; an empty
@@ -698,8 +878,12 @@ class MemorySpace:
         """
         seqs = _to_seq_list(seqs)
         if not seqs:
-            return []
-        cols = "seq, step_index, kind, role, name, headline, prose AS content"
+            self._log_op("expand → 0 rows")
+            return _tag_rows([], "expand → 0 rows")
+        cols = (
+            f"seq, step_index, {_DATE_SQL.format(p='')}, "
+            "kind, role, name, headline, prose AS content"
+        )
         if code:
             cols += ", code"
         ph = ",".join("?" * len(seqs))
@@ -711,7 +895,43 @@ class MemorySpace:
             {kk: r[kk] for kk in r.keys()} for r in self._conn.execute(sql, seqs)
         ]
         self._record(sql, rows=len(rows))
-        return rows
+        detail = "full text + code" if code else "full text"
+        prov = f"expand → {len(rows)} rows ({detail})"
+        self._log_op(prov)
+        return _tag_rows(rows, prov)
+
+    def _doc_freqs(
+        self, tokens: Iterable[str], *, cols: str
+    ) -> tuple[int, dict[str, int]]:
+        """Corpus size and per-token document frequency from the FTS index.
+
+        df is measured with a scoped MATCH count per token rather than an
+        fts5vocab lookup so the porter stemmer applies to the probe exactly as
+        it did at index time ("indexing" finds its stem; a vocab lookup on the
+        surface form would miss and misreport the term as rare). Counts are
+        memoised per (column-scope, token) for the life of this MemorySpace.
+        Feeds the common-term drop in ``_prune_and_terms`` and the
+        IDF-weighted rerank of OR-recall candidates in ``search``.
+        """
+        n_docs = int(self._conn.execute(
+            "SELECT count(*) FROM hist.conversation_history"
+        ).fetchone()[0])
+        dfs: dict[str, int] = {}
+        for t in tokens:
+            key = (cols, t.lower())
+            if key not in self._df_cache:
+                try:
+                    row = self._conn.execute(
+                        "SELECT count(*) FROM hist.conversation_history_fts "
+                        "WHERE conversation_history_fts MATCH ?",
+                        (f'{{{cols}}} : ("{t}")',),
+                    ).fetchone()
+                    self._df_cache[key] = int(row[0])
+                except sqlite3.OperationalError:
+                    # Unprobeable token — treat as unknown (no prune, idf ~ rare).
+                    self._df_cache[key] = 0
+            dfs[t.lower()] = self._df_cache[key]
+        return n_docs, dfs
 
     def _fts_available(self) -> bool:
         """True iff the read-only history DB has the FTS5 index table."""
@@ -728,7 +948,8 @@ class MemorySpace:
 
     def _search_like(
         self, query, scope, kind, k, snippet=False, step_range=None, msg_range=None,
-        steps=None, seqs=None, search_code=False, code_only=False,
+        steps=None, seqs=None, search_code=False, code_only=False, include_self=False,
+        seq_range=None,
     ):
         """LIKE fallback when FTS5 is unavailable. Returns (sql, params, rows).
 
@@ -761,6 +982,14 @@ class MemorySpace:
         if kind:
             where.append("kind = ?")
             params.append(kind)
+        if seq_range is not None:
+            where.append("seq BETWEEN ? AND ?")
+            params.extend([int(seq_range[0]), int(seq_range[1])])
+        if not include_self and self._session_id and kind not in _SELF_SCAFFOLD_KINDS:
+            ph = ",".join("?" * len(_SELF_SCAFFOLD_KINDS))
+            where.append(f"NOT (session_id = ? AND kind IN ({ph}))")
+            params.append(self._session_id)
+            params.extend(_SELF_SCAFFOLD_KINDS)
         if step_range is not None:
             where.append("step_index BETWEEN ? AND ?")
             params.extend([int(step_range[0]), int(step_range[1])])
@@ -780,7 +1009,8 @@ class MemorySpace:
             else "prose AS content"
         )
         sql = (
-            f"SELECT seq, step_index, kind, role, name, headline, {text_col}, "
+            f"SELECT seq, step_index, {_DATE_SQL.format(p='')}, "
+            f"kind, role, name, headline, {text_col}, "
             "(code IS NOT NULL AND code != '') AS has_code "
             "FROM hist.conversation_history "
             "WHERE " + " AND ".join(where) + " ORDER BY seq DESC LIMIT ?"

@@ -391,7 +391,7 @@ def test_digest_message_surfaces_evicted_history_search(tmp_path):
     mgr = _mgr(tmp_path)
     mgr.totals["evicted_msgs"] = 7
     content = mgr.digest_message()["content"]
-    assert "7 earlier turn(s) are no longer in this prompt" in content
+    assert "7 earlier step(s) are no longer in this prompt" in content
     assert "ms.search(" in content and "ms.expand(" in content  # recall cue
     assert "judge in one line" in content           # reflection nudge still present
     mgr.close()

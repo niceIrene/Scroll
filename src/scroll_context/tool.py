@@ -1,8 +1,9 @@
 """The ``scroll_repl`` tool surface (OpenAI function-calling schema).
 
-Scroll's REPL tool is named ``execute_python`` in `scroll_react`; here it is
-``scroll_repl`` so harnesses that already expose a task-side Python tool don't
-end up with two near-identically named Python surfaces.
+Scroll's REPL tool is named ``execute_python`` in `scroll_agent_A`; here it is
+``scroll_repl`` so harnesses that already expose a task-side Python tool (e.g.
+LOCA-bench's ``python_execute`` MCP server) don't end up with two
+near-identically named Python surfaces.
 """
 
 SCROLL_REPL_TOOL_NAME = "scroll_repl"

@@ -20,8 +20,11 @@ from scroll_context._runtime.types import ExecutionResult
 _DEFAULT_MAX_STDOUT_CHARS = 32_000  # ceiling: most a triage view usefully needs
 _MIN_MAX_STDOUT_CHARS = 2_000       # floor: keep a minimal overview in tight configs
 _STDOUT_HEAD_CHARS = 1_500          # how much of the over-budget output we still show
+# Stable prefix of the overflow notice. Public so downstream context managers can
+# recognize an already-executor-bounded output and not stub it a second time.
+OVERFLOW_MARKER = "[output too long:"
 _OVERFLOW_NOTE = (
-    "[output too long: {n} chars printed, over the {limit}-char limit — the rest "
+    OVERFLOW_MARKER + " {n} chars printed, over the {limit}-char limit — the rest "
     "is hidden to protect your context window. Your variables persist, so re-run "
     "printing LESS: a count or list of seqs, snippet=True for a bounded triage "
     "view, or aggregate in a variable and print only the result — not whole rows.]"
@@ -47,11 +50,9 @@ def stdout_cap_for(history_max_tokens: int | None) -> int:
 class Executor:
     """Persistent Python execution against a shared namespace.
 
-    A typical cell is plain synchronous code against the namespace, e.g.
-    ``hits = ms.search('deploy key', scope='task')``. Each cell is compiled
-    with ``PyCF_ALLOW_TOP_LEVEL_AWAIT`` so a cell may also ``await`` a
-    host-injected async callable at the top level without wrapping itself in
-    an ``async def`` block. The compiled code is bound via
+    Compiles each cell with ``PyCF_ALLOW_TOP_LEVEL_AWAIT`` so the model can
+    write ``result = await bash("ls")`` at the top level without wrapping
+    every cell in an ``async def`` block. The compiled code is bound via
     ``types.FunctionType(code, ns)`` and called — when the source contains
     a top-level await, calling returns a coroutine we await; otherwise it
     returns None and the assignments have already happened in ``ns``.
@@ -59,8 +60,8 @@ class Executor:
     Each call captures stdout/stderr via ``redirect_stdout`` /
     ``redirect_stderr``. Any exception is formatted and returned in
     ``stderr``/``error``. Timeouts are enforced via ``asyncio.wait_for`` —
-    fine for the I/O-heavy use case (awaited tool calls, ms queries) but
-    cannot interrupt a pure-Python tight loop.
+    fine for the I/O-heavy use case (bash hops, ms queries) but cannot
+    interrupt a pure-Python tight loop.
     """
 
     def __init__(

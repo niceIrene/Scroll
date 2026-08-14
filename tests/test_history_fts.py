@@ -8,7 +8,7 @@ from scroll_context._runtime.memoryspace import MemorySpace, or_terms
 from scroll_context._runtime.types import LogEntry
 
 
-def _entry(content, kind="model_turn"):
+def _entry(content, kind="conversation"):  # corpus rows, like the seed tier
     return LogEntry(kind=kind, role="assistant", content=content)
 
 
@@ -90,7 +90,7 @@ def test_fts_backfills_preexisting_rows(tmp_path):
     )
     raw.execute(
         "INSERT INTO conversation_history (session_id, kind, content) "
-        "VALUES ('r:t', 'model_turn', 'legacy row mentioning kubernetes')"
+        "VALUES ('r:t', 'conversation', 'legacy row mentioning kubernetes')"
     )
     raw.commit()
     raw.close()
@@ -303,4 +303,118 @@ def test_expand_accepts_search_result_directly(tmp_path):
     assert expanded({h["seq"]: h for h in hits}) == {1, 2, 3}                     # {seq: row} dict
     assert expanded(2) == {2}                                                     # bare seq
     assert expanded([1, 2]) == {1, 2}                                             # list of seqs
+    ms.close()
+
+def test_search_stopword_cannot_veto_exact_match(tmp_path):
+    """Stopwords are pruned from bag-of-words AND queries before the exact pass:
+    "error with pyserini" must hit a turn that says "error: pyserini not found"
+    even though the turn never contains "with"."""
+    store = HistoryStore(tmp_path / "memory.db")
+    store.append(session_id="r:t", run_id="r", task_id="t",
+                 entry=_entry("error: pyserini not found"))
+    store.append(session_id="r:t", run_id="r", task_id="t",
+                 entry=_entry("unrelated turn about kubernetes"))
+    store.close()
+
+    ms = MemorySpace(history_db_path=tmp_path / "memory.db", session_id="r:t")
+    hits = ms.search("error with pyserini", scope="session")
+    assert [h["seq"] for h in hits if not h.get("broadened")] == [1]
+    # A quoted phrase is structured FTS5 — never rewritten, so its stopword
+    # still binds ("error with" appears in no turn).
+    exact = [h for h in ms.search('"error with" pyserini', scope="session")
+             if not h.get("broadened")]
+    assert exact == []
+    ms.close()
+
+
+def test_search_or_layer_fills_slots_even_with_exact_hits(tmp_path):
+    """The OR recall layer is unconditional: with 3 exact AND hits (which the
+    old <3-hit gate would have treated as 'enough'), a relevant turn missing
+    one query term still surfaces, marked broadened=True."""
+    store = HistoryStore(tmp_path / "memory.db")
+    for text in [
+        "python asyncio deadlock in the scheduler",     # all 3 terms
+        "python asyncio deadlock when joining tasks",   # all 3 terms
+        "debugging a python asyncio deadlock today",    # all 3 terms
+        "asyncio deadlock when awaiting a cancelled future",  # missing "python"
+        "grocery list and weekend plans",               # noise
+    ]:
+        store.append(session_id="r:t", run_id="r", task_id="t", entry=_entry(text))
+    store.close()
+
+    ms = MemorySpace(history_db_path=tmp_path / "memory.db", session_id="r:t")
+    hits = ms.search("python asyncio deadlock", scope="session", k=10)
+    exact = [h["seq"] for h in hits if not h.get("broadened")]
+    broadened = [h["seq"] for h in hits if h.get("broadened")]
+    assert set(exact) == {1, 2, 3}      # AND hits own the top slots
+    assert 4 in broadened               # the near-miss surfaces as a lead
+    assert 5 not in exact + broadened   # noise matches no term
+    # Exact hits precede every broadened row.
+    kinds = [bool(h.get("broadened")) for h in hits]
+    assert kinds == sorted(kinds)
+    ms.close()
+
+
+def test_broadened_rows_ranked_by_term_rarity(tmp_path):
+    """OR-recall candidates are reranked by IDF-weighted coverage: one match on
+    a rare term outranks one match on a corpus-common term."""
+    store = HistoryStore(tmp_path / "memory.db")
+    for i in range(6):  # make "database" common (df=7 of 9 turns)
+        store.append(session_id="r:t", run_id="r", task_id="t",
+                     entry=_entry(f"routine database maintenance note {i}"))
+    store.append(session_id="r:t", run_id="r", task_id="t",
+                 entry=_entry("pyserini wrapper for lucene"))       # rare term
+    store.append(session_id="r:t", run_id="r", task_id="t",
+                 entry=_entry("database sizing question"))          # common term
+    store.close()
+
+    ms = MemorySpace(history_db_path=tmp_path / "memory.db", session_id="r:t")
+    # No turn contains all three terms -> 0 exact hits, OR layer fills.
+    hits = ms.search("pyserini database configuration", scope="session", k=3)
+    assert all(h.get("broadened") for h in hits)
+    # idf(pyserini) >> idf(database): the pyserini turn must rank first even
+    # though both candidates contain exactly one query term.
+    assert hits[0]["seq"] == 7
+    ms.close()
+
+
+def test_search_drops_corpus_ubiquitous_terms_on_big_corpora(tmp_path):
+    """On a corpus >= _MIN_CORPUS_FOR_DF_PRUNE rows, a term present in over
+    half the turns is dropped from the AND pass like a stopword: the turn
+    lacking it still comes back as an exact (non-broadened) hit."""
+    store = HistoryStore(tmp_path / "memory.db")
+    for i in range(110):  # "task" df = 110 of 111 > N/2
+        store.append(session_id="r:t", run_id="r", task_id="t",
+                     entry=_entry(f"task step {i} routine bookkeeping"))
+    store.append(session_id="r:t", run_id="r", task_id="t",
+                 entry=_entry("pyserini setup instructions"))  # no "task"
+    store.close()
+
+    ms = MemorySpace(history_db_path=tmp_path / "memory.db", session_id="r:t")
+    hits = ms.search("task pyserini", scope="session")
+    exact = [h["seq"] for h in hits if not h.get("broadened")]
+    assert exact == [111]
+    ms.close()
+
+
+def test_hits_carry_date_field_from_metadata_else_created_at(tmp_path):
+    """search/expand rows surface a `date`: the conversation's own ISO date
+    when recorded (metadata.date, the seed-ingestion convention), else the
+    write day — so temporal triage is a field read, not content parsing."""
+    store = HistoryStore(tmp_path / "memory.db")
+    store.append(session_id="r:t", run_id="r", task_id="t",
+                 entry=LogEntry(kind="conversation", role="user",
+                                content="dolphin cruise booking confirmed",
+                                metadata={"date": "2024-10-07"}))
+    store.append(session_id="r:t", run_id="r", task_id="t",
+                 entry=_entry("dolphin sighting statistics summary"))  # no metadata
+    store.close()
+
+    ms = MemorySpace(history_db_path=tmp_path / "memory.db", session_id="r:t")
+    hits = {h["seq"]: h for h in ms.search("dolphin", scope="session")}
+    assert hits[1]["date"] == "2024-10-07"          # metadata date wins
+    assert len(hits[2]["date"]) == 10               # created_at day fallback
+    rows = {r["seq"]: r for r in ms.expand([1, 2])}
+    assert rows[1]["date"] == "2024-10-07"
+    assert rows[2]["date"] == hits[2]["date"]
     ms.close()

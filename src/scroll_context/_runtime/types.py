@@ -25,8 +25,11 @@ class LogEntry:
     content: str | None = None             # text body
     metadata: dict[str, Any] = field(default_factory=dict)
     # --- structured payload (for faithful persistence/recall) -------------
-    step_index: int | None = None          # loop step that produced this entry
-    msg_index: int | None = None            # index of the owning Msg in history
+    step_index: int | None = None          # loop step that produced this entry;
+                                            # seed ingest reuses it as the prior-
+                                            # conversation SESSION number ("S<n>")
+    msg_index: int | None = None            # writer's own per-conversation message
+                                            # counter (seed tier: global chronology)
     tool_call_id: str | None = None         # links tool_call <-> tool_result
     tool_input: Any = None                  # tool args (dict or JSON-able)
     tool_state: str | None = None           # ToolResultState value for results

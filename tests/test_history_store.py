@@ -11,7 +11,7 @@ from scroll_context._runtime.types import LogEntry
 
 
 def _entry(**kw) -> LogEntry:
-    kw.setdefault("kind", "model_turn")
+    kw.setdefault("kind", "conversation")  # corpus rows, like the seed tier
     return LogEntry(**kw)
 
 
@@ -143,19 +143,39 @@ def test_fts_search_ranks_and_filters(tmp_path):
     ms = MemorySpace(history_db_path=db, session_id="r:t", task_id="t")
     assert ms._fts_available() is True
 
-    # keyword search returns both 'display driver' rows
-    hits = {r["step_index"] for r in ms.search("display driver")}
+    # keyword search returns both 'display driver' rows (these seeded rows are
+    # the reader's own scaffolding kinds, so self-search is opted into)
+    hits = {r["step_index"] for r in ms.search("display driver", include_self=True)}
     assert hits == {0, 2}
     # prefix query
-    assert {r["step_index"] for r in ms.search("fire*")} == {1}
+    assert {r["step_index"] for r in ms.search("fire*", include_self=True)} == {1}
     # boolean
-    assert {r["step_index"] for r in ms.search("network OR firewall")} == {1}
+    assert {r["step_index"] for r in ms.search("network OR firewall", include_self=True)} == {1}
     # kind filter narrows to tool_result only
     assert {r["step_index"] for r in ms.search("driver", kind="tool_result")} == {0}
     # search counts as an FTS-route hist read in the op stats
     assert ms.stats()["hist_fts"] >= 4
     ms.close()
     store.close()
+
+
+def test_search_seq_range_bounds_hits_to_a_span(tmp_path):
+    """seq_range: the map's coordinate as a first-class search filter — the
+    ranked/sanitized replacement for raw FTS sub-selects over BETWEEN."""
+    db = tmp_path / "history.db"
+    store = HistoryStore(db)
+    for i in range(6):
+        store.append(session_id="seed:t", run_id="seed", task_id="t",
+                     entry=_entry(content=f"the zeppelin budget item {i}", step_index=i))
+    store.close()
+    ms = MemorySpace(history_db_path=db, session_id="r:t", task_id="t")
+    all_hits = ms.search("zeppelin", scope="task", k=10)
+    assert len(all_hits) == 6
+    bounded = ms.search("zeppelin", scope="task", k=10, seq_range=(2, 4))
+    assert {h["seq"] for h in bounded} == {2, 3, 4}
+    # Composes with the scaffolding exclusion (bounded rows are seed-tier).
+    assert all(h["kind"] == "conversation" for h in bounded)
+    ms.close()
 
 
 def test_fts_search_scope_session_vs_task(tmp_path):
@@ -219,9 +239,11 @@ def test_history_store_healthy_db_not_quarantined(tmp_path):
     hs.close()
 
 
-def test_sql_query_truncation_marker_is_shape_compatible(tmp_path):
-    """The row-cap marker must carry the same keys as data rows so agent loops
-    like `for r in rows: print(r["seq"], r["content"][:80])` never KeyError."""
+def test_sql_query_truncation_is_out_of_band_and_type_safe(tmp_path):
+    """A capped result contains ONLY data rows — truncation is signaled on the
+    list (`rows.truncated`), never as an in-band marker row. The old marker's
+    empty-string values poisoned typed column operations
+    (`sorted(set(r['seq'] …))` → TypeError; `min(dates)` silently `""`)."""
     db = tmp_path / "history.db"
     store = HistoryStore(db)
     for i in range(5):
@@ -232,14 +254,15 @@ def test_sql_query_truncation_marker_is_shape_compatible(tmp_path):
     rows = ms.sql_query(
         "SELECT seq, content FROM hist.conversation_history ORDER BY seq"
     )
-    assert len(rows) == 4  # 3 data rows + marker
-    marker = rows[-1]
-    assert marker["_truncated"] is True and marker["_row_cap"] == 3
-    # shape-compatible: same columns as the data rows, subscriptable values
-    for k in rows[0]:
-        assert k in marker
-        _ = marker[k][:80]  # str slicing must not raise
-    assert "truncated" in marker["seq"]  # notice lands in the first column
+    assert len(rows) == 3                      # exactly the cap — the in-data tell
+    assert rows.truncated is True and rows.row_cap == 3
+    # Every row is a real, type-homogeneous data row: the operations the old
+    # marker crashed/corrupted now just work.
+    assert sorted({r["seq"] for r in rows}) == [r["seq"] for r in rows]
+    assert min(r["content"] for r in rows) == "m0"
+    # An uncapped result says so too.
+    two = ms.sql_query("SELECT seq FROM hist.conversation_history LIMIT 2")
+    assert two.truncated is False and len(two) == 2
     ms.close()
 
 

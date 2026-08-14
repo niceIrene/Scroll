@@ -141,6 +141,11 @@ class HistoryStore:
                     session_id   TEXT NOT NULL,
                     run_id       TEXT,
                     task_id      TEXT,
+                    -- step_index: the loop STEP on agent-written rows; the
+                    -- prior-conversation SESSION number ("S<n>") on seed-tier
+                    -- rows (see scroll_context/manager.py's terminology note).
+                    -- msg_index: the writer's own per-conversation counter
+                    -- (seed tier: global chronology of the original chat).
                     step_index   INTEGER,
                     msg_index    INTEGER,
                     kind         TEXT NOT NULL,

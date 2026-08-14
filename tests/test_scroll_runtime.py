@@ -37,10 +37,10 @@ def test_memoryspace_row_cap_marks_truncation(tmp_path):
     db = _populate_hist(tmp_path / "memory.db", 5)
     ms = MemorySpace(history_db_path=db, row_cap=2)
     rows = ms.sql_query("SELECT content FROM hist.conversation_history ORDER BY seq")
-    # Two real rows + a truncation marker row at the end.
-    assert len(rows) == 3
-    assert rows[-1].get("_truncated") is True
-    assert rows[-1].get("_row_cap") == 2
+    # Exactly the capped data rows; truncation is out-of-band on the list.
+    assert len(rows) == 2
+    assert rows.truncated is True and rows.row_cap == 2
+    assert all(isinstance(r.get("content"), str) and r["content"] for r in rows)
     ms.close()
 
 

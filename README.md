@@ -8,7 +8,7 @@ demand** by writing Python against a read-only memory API (`ms`) inside a
 persistent REPL.
 
 This repository contains the runtime, a reusable context-management library,
-two reference agents, and the two benchmarks used to evaluate them.
+two reference agents, and the three benchmarks used to evaluate them.
 
 ## Layout
 
@@ -36,14 +36,17 @@ evaluation/                  Independent evaluation project (scroll-eval):
       scroll_agent_A/        The same loop with scroll context management,
                              fully delegated to ScrollContextManager.
     evals/beam/              BEAM long-term-memory benchmark (+ LLM judge).
+    evals/longmemeval/       LongMemEval memory-QA benchmark (+ LLM judge).
     evals/terminal_bench/    Terminal-Bench integration (Harbor sandbox).
     harness/                 Run orchestration: config, run dirs, summaries.
     cli.py                   The `scroll-eval` command.
     edgebench_entry.py       Standalone workspace-agent entrypoint.
   tests/                     Evaluation tests.
-configs/                     beam.yaml, terminal-bench.yaml
-local-tasks/                 Benchmark task data (beam/, terminal-bench-2.1/).
-scripts/                     Run-analysis utilities (beam_analysis.py, ...).
+configs/                     beam.yaml, longmemeval.yaml, terminal-bench.yaml
+local-tasks/                 Benchmark task data (beam/, longmemeval/,
+                             terminal-bench-2.1/).
+scripts/                     Run-analysis utilities (beam_analysis.py, ...) and
+                             gen_longmemeval_tasks.py (task materialization).
 runs/                        Run outputs (gitignored).
 ```
 
@@ -66,11 +69,32 @@ touch .env.local
 uv run python scripts/migrate_beam.py --scale 100K
 ```
 
+### Setting up the LongMemEval experiment
+
+```bash
+git submodule update --init --progress external/longmemeval
+
+uv sync --all-packages --all-extras   # package + evaluation project
+
+# Put your Model endpoint/key into .env.local
+touch .env.local
+
+# Generate native tasks into local-tasks/longmemeval/ (gitignored, so this
+# must be run once per clone) from a LongMemEval dataset file. --limit /
+# --qids / --question-type narrow which instances are generated; omit for all.
+uv run python scripts/gen_longmemeval_tasks.py \
+    --src external/longmemeval/data/longmemeval_s.json \
+    --dataset longmemeval --limit 10
+```
+
 ### Running
 
 ```bash
 # BEAM (long-term memory): ingest + run + judge, per configs/beam.yaml
 uv run scroll-eval beam configs/beam.yaml
+
+# LongMemEval (memory QA): ingest + run + judge, per configs/longmemeval.yaml
+uv run scroll-eval longmemeval configs/longmemeval.yaml
 
 # Terminal-Bench (Harbor/docker sandbox), per configs/terminal-bench.yaml
 uv run scroll-eval run configs/terminal-bench.yaml --task <task-id>
