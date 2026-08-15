@@ -199,16 +199,18 @@ async def run(task: TaskSpec, ctx: LoopContext) -> Trajectory:
         base = f"{base}\n\n# Action tools\n\n" + "\n".join(action_docs)
     extra = getattr(ctx, "system_prompt", None)
     system_content = f"{base}\n\n{extra}" if extra else base
-    if seed_on:
-        seed_map = mgr.seed_index_map()
-        if seed_map:
-            system_content = f"{system_content}\n\n{seed_map}"
-
     history: list[dict] = [
         {"role": "system", "content": system_content},
         {"role": "user", "content": task.instruction},
     ]
     mgr.record_initial_prompt(history[1], step_index=-1, msg_index=1)
+
+    # Prior-session priming (replaces the old seed_index_map system-prompt
+    # append): folds shared-tier and own prior session spans into the live
+    # index and inserts the pinned ``[memory]`` placeholder at
+    # ``history[_PINNED]``. No-op when the index is off or sources are empty.
+    if seed_on:
+        mgr.prime_prior_sessions(history)
 
     steps: list[Step] = []
     tokens_in_total = 0

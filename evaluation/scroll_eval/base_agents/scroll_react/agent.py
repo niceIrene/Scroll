@@ -443,21 +443,21 @@ async def run(task: TaskSpec, ctx: LoopContext) -> Trajectory:
     extra = getattr(ctx, "system_prompt", None)
     system_content = f"{base}\n\n{extra}" if extra else base
 
-    # Seed-index: fold this task's prior ``run_id='seed'`` sessions into an
-    # in-context [L0]/[L1] memory map appended to the system prompt (which is
-    # pinned, never evicted), so the agent sees the haystack's shape from turn
-    # one. No-op when off or when the task has no seed rows.
-    if seed_on:
-        seed_map = mgr.seed_index_map()
-        if seed_map:
-            system_content = f"{system_content}\n\n{seed_map}"
-
     history: list[dict] = [
         {"role": "system", "content": system_content},
         {"role": "user", "content": task.instruction},
     ]
     # Persist the task instruction so a later session can retrieve it.
     mgr.record_initial_prompt(history[1], step_index=-1, msg_index=1)
+
+    # Prior-session priming (replaces the old seed_index_map system-prompt
+    # append): fold shared-tier (``S<n>``, e.g. BEAM's seeded conversation)
+    # and own prior (``P<n>``) session spans into the SAME index that live
+    # evictions later extend; inserts the pinned ``[memory]`` placeholder at
+    # ``history[_PINNED]`` itself. No-op when the index is off or the sources
+    # are empty.
+    if seed_on:
+        mgr.prime_prior_sessions(history)
 
     steps: list[Step] = []
     tokens_in_total = 0
