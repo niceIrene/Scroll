@@ -1,0 +1,20 @@
+# Ablation arm 3 — FULL SCROLL (persisted DB + REPL): the unchanged scroll_react
+# agent. Deltas vs the sibling configs isolate one component each:
+#   beam-scroll − beam-scroll-tools  = the REPL (code as retrieval interface +
+#                                      cross-step reorganization)
+#   beam-scroll-tools − beam-longctx = the persisted DB + agentic retrieval
+# Fairness: the three configs differ ONLY in agent.id and tools. Run all arms
+# with the same --task/--scale set, --concurrency, and judge (SCROLL_JUDGE_MODEL).
+agent: { type: base_agents, id: scroll_react }
+model:
+  endpoint: ${OPENAI_BASE_URL}
+  name: ${OPENAI_MODEL_NAME}
+  api_key_env: OPENAI_API_KEY
+  thinking: true
+  thinking_budget: 4000
+dataset: { type: local, name: beam }
+tasks: all
+budget: { max_tokens: 4000000, wall_time_s: 600 }   # per probe (one agent.run)
+memory: { history_max_tokens: 500000 }              # eviction budget
+trace: { run_id: auto, phoenix_project: beam-ablation }
+tools: [execute_python, submit_answer]

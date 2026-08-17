@@ -95,6 +95,92 @@ _EXECUTE_PYTHON_SCHEMA: dict = {
 }
 
 
+# JSON retrieval tools (scroll_tools agent — the DB-without-REPL ablation arm):
+# the same MemorySpace reads scroll_react reaches through execute_python, but
+# exposed as plain tool calls, so the model retrieves without writing code.
+_SEARCH_HISTORY_SCHEMA: dict = {
+    "type": "function",
+    "function": {
+        "name": "search_history",
+        "description": (
+            "Full-text search over your durable conversation history. Returns "
+            "up to k hits, one line each: seq, session, date, kind/role, "
+            "headline, and a match-centred snippet. Snippets are lossy "
+            "previews — read the turns that matter in full with expand_turns. "
+            "A result that fills k is saturated: more turns may match."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "FTS5 match expression: plain words (all must match), "
+                        'quoted "exact phrases", OR between alternatives, '
+                        "prefix term*."
+                    ),
+                },
+                "k": {
+                    "type": "integer",
+                    "description": "Max hits to return (default 10, max 50).",
+                },
+                "kind": {
+                    "type": "string",
+                    "description": (
+                        "Optional row-kind filter, e.g. 'conversation' for "
+                        "the prior dialogue turns."
+                    ),
+                },
+                "seq_range": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": (
+                        "Optional inclusive [lo, hi] seq bound — use a "
+                        "[memory] map line's span to sweep one region."
+                    ),
+                },
+                "step_range": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": (
+                        "Optional inclusive [lo, hi] session-number bound "
+                        "(the S<n> shown per hit)."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+_EXPAND_TURNS_SCHEMA: dict = {
+    "type": "function",
+    "function": {
+        "name": "expand_turns",
+        "description": (
+            "Read chosen turns IN FULL by their seq ids (from search_history "
+            "hits or a [memory] map span). Returns the complete untruncated "
+            "content of each turn, in seq order."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "seqs": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "The seq ids to read in full.",
+                }
+            },
+            "required": ["seqs"],
+        },
+    },
+}
+
+
 # Canonical legacy surface (base_agent_A). MUST remain byte-identical to the
 # pre-registry export — order and contents preserved.
 OPENAI_TOOLS_SCHEMA: list[dict] = [_BASH_SCHEMA, _SUBMIT_ANSWER_SCHEMA]
@@ -107,6 +193,8 @@ TOOLS: dict[str, dict] = {
     "bash": _BASH_SCHEMA,
     "submit_answer": _SUBMIT_ANSWER_SCHEMA,
     "execute_python": _EXECUTE_PYTHON_SCHEMA,
+    "search_history": _SEARCH_HISTORY_SCHEMA,
+    "expand_turns": _EXPAND_TURNS_SCHEMA,
 }
 
 

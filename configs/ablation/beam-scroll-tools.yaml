@@ -1,0 +1,17 @@
+# Ablation arm 2 — DB WITHOUT REPL: scroll_react's exact loop and context
+# management, but retrieval happens through plain JSON tools (search_history /
+# expand_turns) instead of Python cells — no variables, no code, no cross-step
+# reorganization of retrieved data. See beam-scroll.yaml for the delta map.
+agent: { type: base_agents, id: scroll_tools }
+model:
+  endpoint: ${OPENAI_BASE_URL}
+  name: ${OPENAI_MODEL_NAME}
+  api_key_env: OPENAI_API_KEY
+  thinking: true
+  thinking_budget: 4000
+dataset: { type: local, name: beam }
+tasks: all
+budget: { max_tokens: 4000000, wall_time_s: 600 }   # per probe (one agent.run)
+memory: { history_max_tokens: 500000 }              # eviction budget
+trace: { run_id: auto, phoenix_project: beam-ablation }
+tools: [search_history, expand_turns, submit_answer]

@@ -809,7 +809,9 @@ async def run(task: TaskSpec, ctx: LoopContext) -> Trajectory:
                 forced_final_answer = True
     finally:
         totals = mgr.metrics()
-        ms_ops = totals.get("ms_ops", {})
+        # The ported manager.metrics() no longer bundles ms_ops; read the
+        # retrieval-route counters straight from the memoryspace.
+        ms_ops = totals.get("ms_ops") or mgr.runtime.memoryspace.stats()
         mgr.close()
         if prompt_log is not None:
             try:

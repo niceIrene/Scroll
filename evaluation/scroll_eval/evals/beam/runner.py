@@ -471,9 +471,16 @@ def run(
 
     # The standing BEAM guidance lives in ONE system prompt (deduplicated from
     # the per-probe user message); the agent receives it via ctx.system_prompt.
+    # An agent whose retrieval surface differs from the default (REPL + ms)
+    # gets its own variant when prompts/system_<agent.id>.md exists — e.g.
+    # system_scroll_tools.md (JSON retrieval tools) and
+    # system_longctx_baseline.md (transcript-in-prompt) for the ablation arms.
     from scroll_eval.evals.beam import prompts as beam_prompts
 
-    system_prompt = beam_prompts.load("system")
+    variant = Path(beam_prompts.__file__).parent / f"system_{cfg.agent.id}.md"
+    system_prompt = beam_prompts.load(
+        f"system_{cfg.agent.id}" if variant.exists() else "system"
+    )
 
     print(
         f"Running BEAM on {len(task_names)} task(s) with {cfg.agent.type}/{cfg.agent.id} "
