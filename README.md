@@ -90,6 +90,14 @@ curl -L -o external/longmemeval/data/longmemeval_s_cleaned.json \
 uv run python scripts/gen_longmemeval_tasks.py \
     --src external/longmemeval/data/longmemeval_s_cleaned.json \
     --dataset longmemeval --limit 0
+
+# The "m" split (~1.5M-token haystacks, 2.7 GB download) lives side by side —
+# the config's dataset.name picks the split (see configs/longmemeval-m.yaml):
+#   curl -L -o external/longmemeval/data/longmemeval_m_cleaned.json \
+#     https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_m_cleaned.json
+#   uv run python scripts/gen_longmemeval_tasks.py \
+#     --src external/longmemeval/data/longmemeval_m_cleaned.json \
+#     --dataset longmemeval-m --limit 0
 ```
 
 ### Running
