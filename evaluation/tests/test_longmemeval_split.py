@@ -27,3 +27,44 @@ def test_m_config_resolves_its_own_task_dir(monkeypatch):
     assert cfg.agent == s.agent
     assert cfg.memory.history_max_tokens == s.memory.history_max_tokens
     assert cfg.tools == s.tools
+
+
+def test_run_all_fans_tasks_out_concurrently(monkeypatch, tmp_path):
+    """--concurrency bounds TASKS (each LME task has one probe): 4 tasks at
+    concurrency 4 must overlap, not run back to back."""
+    import asyncio
+
+    from scroll_eval.evals.longmemeval import runner as lme_runner
+
+    running = {"now": 0, "peak": 0}
+
+    async def fake_task(cfg, name, task_out, label, **kw):
+        running["now"] += 1
+        running["peak"] = max(running["peak"], running["now"])
+        await asyncio.sleep(0.05)
+        running["now"] -= 1
+        return {"score": 1.0}
+
+    monkeypatch.setattr(lme_runner, "_run_task_async", fake_task)
+    summary = asyncio.run(
+        lme_runner._run_all(
+            cfg=None, task_names=["a", "b", "c", "d"], label="l", run_dir=tmp_path,
+            agent_run=None, llm_openai=None, llm_agentscope=None, tracer=None,
+            tools=[], system_prompt="", concurrency=4, judge_workers=1,
+        )
+    )
+    assert list(summary) == ["a", "b", "c", "d"]      # order preserved
+    # All four tasks in flight at once — the definitive overlap proof (wall
+    # time is not asserted: _run_all ends with a fixed GC-settle sleep).
+    assert running["peak"] == 4
+
+    # And the semaphore still bounds the fan-out.
+    running["now"] = running["peak"] = 0
+    asyncio.run(
+        lme_runner._run_all(
+            cfg=None, task_names=["a", "b", "c", "d"], label="l", run_dir=tmp_path,
+            agent_run=None, llm_openai=None, llm_agentscope=None, tracer=None,
+            tools=[], system_prompt="", concurrency=2, judge_workers=1,
+        )
+    )
+    assert running["peak"] == 2

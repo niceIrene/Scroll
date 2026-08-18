@@ -312,9 +312,13 @@ async def _run_task_async(
         "1", "true", "yes", "on"
     )
     seed_db = task_out / "seed.db"
-    n_turns = build_seed_db_for_task(task_dir, task_id, seed_db, seed_index=seed_index)
+    # Ingest is sync and CPU/IO-heavy (FTS5-indexing the whole haystack);
+    # off-thread so concurrent sibling tasks keep their model calls flowing.
+    n_turns = await asyncio.to_thread(
+        build_seed_db_for_task, task_dir, task_id, seed_db, seed_index=seed_index
+    )
     history_db = task_out / "history.db"
-    shutil.copyfile(seed_db, history_db)
+    await asyncio.to_thread(shutil.copyfile, seed_db, history_db)
 
     probes = json.loads((task_dir / "questions.json").read_text(encoding="utf-8"))
     print(f"[{index}/{total}] {name}: {n_turns} turns seeded; {len(probes)} probe(s)", flush=True)
@@ -340,7 +344,9 @@ async def _run_task_async(
     (task_out / "answers.json").write_text(
         json.dumps(_group_by_type(answers), indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    scores = _judge(task_dir, task_out, workers=judge_workers)
+    # The judge subprocess makes its own LLM calls and blocks for their whole
+    # duration — off-thread so it can't stall sibling tasks' event loop.
+    scores = await asyncio.to_thread(_judge, task_dir, task_out, workers=judge_workers)
     elapsed = time.monotonic() - t0
     reward = scores["overall_reward"]
     print(f"[{index}/{total}] {name}: reward={reward:.4f} elapsed={elapsed:.0f}s", flush=True)
@@ -371,20 +377,38 @@ async def _run_all(
     concurrency: int,
     judge_workers: int,
 ) -> dict:
-    """Run every task under one event loop so the async LLM client is reused."""
-    summary: dict[str, dict] = {}
+    """Run every task under one event loop so the async LLM client is reused.
+
+    TASK-level fan-out: unlike BEAM (20 probes per task, parallelized inside
+    the task), a LongMemEval task carries a single probe — so ``concurrency``
+    here bounds how many TASKS run at once. The probe-level semaphore in
+    ``_run_probes`` still exists but is a party of one per task.
+    """
     total = len(task_names)
-    for i, name in enumerate(task_names, start=1):
-        try:
-            summary[name] = await _run_task_async(
-                cfg, name, run_dir / "tasks" / _slug(name), label,
-                agent_run=agent_run, llm_openai=llm_openai, llm_agentscope=llm_agentscope,
-                tracer=tracer, tools=tools, system_prompt=system_prompt,
-                index=i, total=total, concurrency=concurrency, judge_workers=judge_workers,
-            )
-        except Exception as e:  # noqa: BLE001 - one bad task shouldn't kill the run
-            print(f"[{i}/{total}] {name}: ERROR {e}", flush=True)
-            summary[name] = {"error": str(e)}
+    sem = asyncio.Semaphore(max(1, int(concurrency)))
+
+    async def _one(i: int, name: str) -> tuple[str, dict]:
+        async with sem:
+            try:
+                result = await _run_task_async(
+                    cfg, name, run_dir / "tasks" / _slug(name), label,
+                    agent_run=agent_run, llm_openai=llm_openai,
+                    llm_agentscope=llm_agentscope,
+                    tracer=tracer, tools=tools, system_prompt=system_prompt,
+                    index=i, total=total, concurrency=concurrency,
+                    judge_workers=judge_workers,
+                )
+            except Exception as e:  # noqa: BLE001 - one bad task shouldn't kill the run
+                print(f"[{i}/{total}] {name}: ERROR {e}", flush=True)
+                result = {"error": str(e)}
+        return name, result
+
+    # gather preserves input order, so the summary stays in task_names order
+    # regardless of completion order.
+    results = await asyncio.gather(
+        *[_one(i, name) for i, name in enumerate(task_names, start=1)]
+    )
+    summary: dict[str, dict] = dict(results)
 
     import gc
 
