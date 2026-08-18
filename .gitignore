@@ -43,8 +43,11 @@ QwenPaw/
 
 # Local-only smoke config (kept on disk, not tracked)
 configs/longmemeval-smoke.yaml
+
+# Generated benchmark task data (materialize per clone: migrate_beam.py /
+# gen_longmemeval_tasks.py)
 local-tasks/beam/
-local-tasks/beam/
+local-tasks/longmemeval/
 
 # Build artifacts
 dist/

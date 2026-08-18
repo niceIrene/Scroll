@@ -79,12 +79,17 @@ uv sync --all-packages --all-extras   # package + evaluation project
 # Put your Model endpoint/key into .env.local
 touch .env.local
 
+# The dataset JSONs are NOT in the submodule repo — download from HuggingFace
+# (~277 MB for the "s" tier; also longmemeval_m_cleaned / longmemeval_oracle):
+curl -L -o external/longmemeval/data/longmemeval_s_cleaned.json \
+    https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+
 # Generate native tasks into local-tasks/longmemeval/ (gitignored, so this
-# must be run once per clone) from a LongMemEval dataset file. --limit /
-# --qids / --question-type narrow which instances are generated; omit for all.
+# must be run once per clone) from the dataset file. --limit 0 = all 500
+# instances (the default is 10); --qids / --question-type narrow further.
 uv run python scripts/gen_longmemeval_tasks.py \
-    --src external/longmemeval/data/longmemeval_s.json \
-    --dataset longmemeval --limit 10
+    --src external/longmemeval/data/longmemeval_s_cleaned.json \
+    --dataset longmemeval --limit 0
 ```
 
 ### Running
