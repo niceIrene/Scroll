@@ -208,6 +208,16 @@ def _build_agentscope_model(
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("DASHSCOPE_API_KEY") or ""
     base_url = os.environ.get("OPENAI_BASE_URL") or ""
 
+    # Backstop against indefinitely stalled requests (openai.AsyncClient
+    # timeout: total wait for non-streamed calls, max inter-chunk gap for
+    # streamed ones). Default is deliberately generous — 600s, the per-probe
+    # wall budget scale, NOT the 120s default the raw llm_openai client uses —
+    # because large single calls (e.g. 50k-token summarization chunks) can
+    # legitimately run for minutes; the point is to kill hangs, not police
+    # latency. SCROLL_LLM_TIMEOUT_S overrides both clients when set.
+    timeout_s = float(os.environ.get("SCROLL_LLM_TIMEOUT_S") or 600)
+    client_kwargs = {"timeout": timeout_s}
+
     if "dashscope" in base_url.lower():
         cred = DashScopeCredential(api_key=api_key, base_url=base_url)
         params = None
@@ -221,10 +231,13 @@ def _build_agentscope_model(
         # DashScope streams reasoning deltas, so thinking-on requires stream=True;
         # the agent loop collapses that stream back to one ChatResponse.
         return DashScopeChatModel(
-            credential=cred, model=bare_model, parameters=params, stream=bool(thinking)
+            credential=cred, model=bare_model, parameters=params, stream=bool(thinking),
+            client_kwargs=client_kwargs,
         )
     cred = OpenAICredential(api_key=api_key, base_url=base_url)
-    return OpenAIChatModel(credential=cred, model=bare_model, stream=False)
+    return OpenAIChatModel(
+        credential=cred, model=bare_model, stream=False, client_kwargs=client_kwargs
+    )
 
 
 def _trajectory_json(trajectory: Trajectory) -> str:

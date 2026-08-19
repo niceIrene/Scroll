@@ -3,7 +3,9 @@
 #   beam-scroll − beam-scroll-tools  = the REPL (code as retrieval interface +
 #                                      cross-step reorganization)
 #   beam-scroll-tools − beam-longctx = the persisted DB + agentic retrieval
-# Fairness: the three configs differ ONLY in agent.id and tools. Run all arms
+#   beam-summary vs beam-longctx     = rolling-summary memory vs recency-
+#                                      truncated prompt stuffing (both no-DB)
+# Fairness: the configs differ ONLY in agent.id and tools. Run all arms
 # with the same --task/--scale set, --concurrency, and judge (SCROLL_JUDGE_MODEL).
 agent: { type: base_agents, id: scroll_react }
 model:
