@@ -13,12 +13,15 @@ Subcommands:
     ms-ops   Per-chat / per-category memory-substrate interaction counts
              (conversation-history reads, scratch reads/writes) plus how often
              the in-context history buffer was evicted to fit the token budget.
-    cost     Per-probe input/output token cost and turn count — one row per
-             probe (each probe is a separate agent chat, so same-type probes
-             can take a different number of turns; they are shown on their own
-             rows rather than summed). A per-chat ``ALL`` row totals the chat's
-             probes. ``--avg`` collapses to a per-category mean per chat across
-             the run.
+    cost     Per-probe input/output token cost, turn count and wall time — one
+             row per probe (each probe is a separate agent chat, so same-type
+             probes can take a different number of turns; they are shown on
+             their own rows rather than summed). A per-chat ``ALL`` row totals
+             the chat's probes. ``--avg`` collapses to what a *single probe* of
+             each category costs on average across the run (category total ÷ its
+             probe count), which is the like-for-like number to compare between
+             runs. ``wall_s`` is the probe's own agent-loop latency; probes run
+             concurrently, so summed wall_s is agent-seconds, not elapsed time.
     scores   Cumulative mean judge score per probing-question category over the
              chats finished so far (reads per-chat tasks/*/scores.json, so it
              works mid-run, before the final summary.json is written).
@@ -58,6 +61,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 from collections import defaultdict
@@ -228,31 +232,33 @@ def _average_by_category(rows: dict, fields: tuple):
     return out, n_chats
 
 
-def _print_grouped_avg_table(avg_rows: list, fields: tuple) -> None:
-    header = ["category", "chats", *fields]
+def _print_grouped_avg_table(avg_rows: list, fields: tuple, count_col: str = "chats",
+                             note: str = "(values are mean per chat, averaged across tasks)"
+                             ) -> None:
     cat_w = max(len("category"), max(len(r[0]) for r in avg_rows))
     num_w = {f: max(len(f), 10) for f in fields}
 
-    def line(category, chats, vals) -> str:
-        cells = [category.ljust(cat_w), str(chats).rjust(5)]
+    def line(category, count, vals) -> str:
+        cells = [category.ljust(cat_w), str(count).rjust(6)]
         cells += [f"{vals[f]:.2f}".rjust(num_w[f]) for f in fields]
         return "  ".join(cells)
 
-    print("  ".join(["category".ljust(cat_w), "chats".rjust(5),
+    print("  ".join(["category".ljust(cat_w), count_col.rjust(6),
                      *[f.rjust(num_w[f]) for f in fields]]))
-    print("  ".join(["-" * cat_w, "-" * 5, *["-" * num_w[f] for f in fields]]))
-    for category, chats, means in avg_rows:
+    print("  ".join(["-" * cat_w, "-" * 6, *["-" * num_w[f] for f in fields]]))
+    for category, count, means in avg_rows:
         if category == "OVERALL":
-            print("  ".join(["-" * cat_w, "-" * 5, *["-" * num_w[f] for f in fields]]))
-        print(line(category, chats, means))
-    print("\n(values are mean per chat, averaged across tasks)")
+            print("  ".join(["-" * cat_w, "-" * 6, *["-" * num_w[f] for f in fields]]))
+        print(line(category, count, means))
+    print(f"\n{note}")
 
 
-def _write_grouped_avg_csv(avg_rows: list, out, fields: tuple) -> None:
+def _write_grouped_avg_csv(avg_rows: list, out, fields: tuple,
+                           count_col: str = "chats") -> None:
     w = csv.writer(out)
-    w.writerow(["category", "chats", *fields])
-    for category, chats, means in avg_rows:
-        w.writerow([category, chats, *[f"{means[f]:.4f}" for f in fields]])
+    w.writerow(["category", count_col, *fields])
+    for category, count, means in avg_rows:
+        w.writerow([category, count, *[f"{means[f]:.4f}" for f in fields]])
 
 
 def cmd_ms_ops(args: argparse.Namespace) -> None:
@@ -278,17 +284,34 @@ def cmd_ms_ops(args: argparse.Namespace) -> None:
 
 # --- cost -------------------------------------------------------------------
 
-# Per-probe token + turn cost, summed per (chat, category). All three live at
-# the top level of the trajectory ``metrics`` block:
+# Per-probe token + turn + latency cost, all read from the top level of the
+# trajectory ``metrics`` block:
 #   tokens_in  - cumulative prompt tokens the model was sent across all turns
 #   tokens_out - cumulative completion tokens it generated
 #   turns      - number of agent steps taken (metrics.step_count)
+#   wall_s     - the probe's agent-loop wall time in seconds (metrics.wall_time_s;
+#                judging excluded). Probes of a chat run concurrently, so a summed
+#                wall_s column is agent-seconds of work, not elapsed time.
 _COST_METRICS = (
     ("tokens_in", "tokens_in"),
     ("tokens_out", "tokens_out"),
     ("turns", "step_count"),
+    ("wall_s", "wall_time_s"),
 )
 _COST_FIELDS = tuple(name for name, _ in _COST_METRICS)
+# wall_s is a float (seconds); every other cost column is an integer counter.
+_FLOAT_FIELDS = frozenset({"wall_s"})
+
+
+def _cost_value(field: str, raw):
+    """Coerce one metrics value: seconds stay float, counters become int."""
+    v = raw if isinstance(raw, (int, float)) else 0
+    return float(v) if field in _FLOAT_FIELDS else int(v)
+
+
+def _fmt_cost(field: str, value) -> str:
+    """Render a cost cell: seconds to 2dp, counters as plain integers."""
+    return f"{value:.2f}" if field in _FLOAT_FIELDS else str(value)
 
 
 def _collect_cost(run_dir: Path):
@@ -300,7 +323,7 @@ def _collect_cost(run_dir: Path):
     probes separate via ``_collect_cost_probes``; this per-category sum only
     feeds ``--avg``.
     """
-    rows: dict[tuple[str, str], dict[str, int]] = defaultdict(
+    rows: dict[tuple[str, str], dict[str, float]] = defaultdict(
         lambda: {f: 0 for f in _COST_FIELDS}
     )
     probe_counts: dict[tuple[str, str], int] = defaultdict(int)
@@ -312,8 +335,7 @@ def _collect_cost(run_dir: Path):
             continue
         key = (chat, category)
         for col, mkey in _COST_METRICS:
-            v = metrics.get(mkey, 0)
-            rows[key][col] += int(v) if isinstance(v, (int, float)) else 0
+            rows[key][col] += _cost_value(col, metrics.get(mkey, 0))
         probe_counts[key] += 1
     return rows, probe_counts, skipped
 
@@ -335,8 +357,7 @@ def _collect_cost_probes(run_dir: Path):
             continue
         row = {"chat": chat, "category": category, "probe": probe}
         for col, mkey in _COST_METRICS:
-            v = metrics.get(mkey, 0)
-            row[col] = int(v) if isinstance(v, (int, float)) else 0
+            row[col] = _cost_value(col, metrics.get(mkey, 0))
         rows.append(row)
     return rows, skipped
 
@@ -365,10 +386,15 @@ def _print_cost_probe_table(rows: list, fields: tuple = _COST_FIELDS) -> None:
         widths[0] = max(widths[0], len(r["chat"]))
         widths[1] = max(widths[1], len(r["category"]))
         widths[2] = max(widths[2], len(str(r["probe"])))
+    grand = {f: 0 for f in fields}
+    for r in rows:
+        for f in fields:
+            grand[f] += r[f]
     for i, f in enumerate(fields):
         col = 3 + i
-        for r in rows:
-            widths[col] = max(widths[col], len(str(r[f])))
+        # The ALL/TOTAL sums can be wider than any single probe's cell.
+        widths[col] = max(widths[col], len(_fmt_cost(f, grand[f])),
+                          *(len(_fmt_cost(f, r[f])) for r in rows))
 
     def line(cells) -> str:
         return "  ".join(str(c).ljust(widths[i]) for i, c in enumerate(cells))
@@ -385,7 +411,7 @@ def _print_cost_probe_table(rows: list, fields: tuple = _COST_FIELDS) -> None:
     def flush_chat() -> None:
         if current_chat is not None:
             print(line([current_chat, "ALL", chat_probes,
-                        *[chat_sub[f] for f in fields]]))
+                        *[_fmt_cost(f, chat_sub[f]) for f in fields]]))
             print()
 
     for r in rows:
@@ -394,38 +420,79 @@ def _print_cost_probe_table(rows: list, fields: tuple = _COST_FIELDS) -> None:
             current_chat = r["chat"]
             chat_sub = {f: 0 for f in fields}
             chat_probes = 0
-        print(line([r["chat"], r["category"], r["probe"], *[r[f] for f in fields]]))
+        print(line([r["chat"], r["category"], r["probe"],
+                    *[_fmt_cost(f, r[f]) for f in fields]]))
         for f in fields:
             chat_sub[f] += r[f]
             grand[f] += r[f]
         chat_probes += 1
         grand_probes += 1
     flush_chat()
-    print(line(["TOTAL", "", grand_probes, *[grand[f] for f in fields]]))
+    print(line(["TOTAL", "", grand_probes,
+                *[_fmt_cost(f, grand[f]) for f in fields]]))
 
 
 def _write_cost_probe_csv(rows: list, out, fields: tuple = _COST_FIELDS) -> None:
     w = csv.writer(out)
     w.writerow(["chat", "category", "probe", *fields])
     for r in sorted(rows, key=_probe_sort_key):
-        w.writerow([r["chat"], r["category"], r["probe"], *[r[f] for f in fields]])
+        w.writerow([r["chat"], r["category"], r["probe"],
+                    *[_fmt_cost(f, r[f]) for f in fields]])
+
+
+def _average_cost_by_probe(rows: dict, probe_counts: dict, fields: tuple = _COST_FIELDS):
+    """Collapse to the mean cost of a *single probe*, per category.
+
+    ``rows`` holds per-(chat, category) sums over that chat's probes of the
+    category, and ``probe_counts`` how many probes each of those cells covers —
+    so dividing the category's total by its probe count gives the average one
+    probe of that type costs, whatever the probe-per-chat mix. (Contrast
+    ``_average_by_category``, which divides by *chats* and so reports what a
+    chat's whole batch of that probe type costs; that is still what ms-ops
+    ``--avg`` shows.) Returns ``(per_category, n_probes)`` where per_category is
+    ``(category, probes, {field: mean})`` sorted, plus an OVERALL row averaging
+    over every probe in the run.
+    """
+    cat_sum: dict[str, dict[str, float]] = defaultdict(lambda: {f: 0 for f in fields})
+    cat_probes: dict[str, int] = defaultdict(int)
+    for (_chat, category), r in rows.items():
+        cat_probes[category] += probe_counts[(_chat, category)]
+        for f in fields:
+            cat_sum[category][f] += r[f]
+
+    total_probes = sum(cat_probes.values())
+    out = []
+    for category in sorted(cat_sum):
+        n = cat_probes[category]
+        out.append((category, n, {f: (cat_sum[category][f] / n if n else 0.0)
+                                  for f in fields}))
+    overall = {
+        f: (sum(cat_sum[c][f] for c in cat_sum) / total_probes if total_probes else 0.0)
+        for f in fields
+    }
+    out.append(("OVERALL", total_probes, overall))
+    return out, total_probes
 
 
 def cmd_cost(args: argparse.Namespace) -> None:
-    # --avg collapses probes into a per-category mean per chat; the default view
-    # keeps each probe on its own row so same-type probes' differing turn counts
-    # are visible rather than summed away.
+    # --avg collapses to what a single probe of each type costs on average; the
+    # default view keeps each probe on its own row so same-type probes' differing
+    # turn counts are visible rather than summed away.
     if args.avg:
-        rows, _probe_counts, skipped = _collect_cost(args.run_dir)
+        rows, probe_counts, skipped = _collect_cost(args.run_dir)
         if not rows:
             raise SystemExit(
                 f"no probe trajectories with metrics found under {args.run_dir}"
             )
-        avg_rows, _ = _average_by_category(rows, _COST_FIELDS)
+        avg_rows, _ = _average_cost_by_probe(rows, probe_counts)
         if args.csv:
-            _write_grouped_avg_csv(avg_rows, sys.stdout, _COST_FIELDS)
+            _write_grouped_avg_csv(avg_rows, sys.stdout, _COST_FIELDS,
+                                   count_col="probes")
         else:
-            _print_grouped_avg_table(avg_rows, _COST_FIELDS)
+            _print_grouped_avg_table(
+                avg_rows, _COST_FIELDS, count_col="probes",
+                note="(values are the mean per probe, across every chat in the run)",
+            )
             if skipped:
                 print(f"(skipped {skipped} probe(s): missing trajectory.json or metrics)")
         return
@@ -845,12 +912,13 @@ def main() -> None:
     p_ms.set_defaults(func=cmd_ms_ops)
 
     p_cost = sub.add_parser(
-        "cost", help="Per-chat/per-category input/output token cost and turn count."
+        "cost", help="Per-probe input/output token cost, turn count and wall time."
     )
     p_cost.add_argument("run_dir", type=Path, help="The BEAM run directory (contains tasks/).")
     p_cost.add_argument("--csv", action="store_true", help="Emit CSV to stdout instead of a table.")
     p_cost.add_argument("--avg", action="store_true",
-                        help="Collapse chats: show per-category mean per chat across all tasks.")
+                        help="Collapse to the mean cost of one probe of each category, "
+                             "averaged over every probe in the run.")
     p_cost.set_defaults(func=cmd_cost)
 
     p_sc = sub.add_parser(
@@ -878,4 +946,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BrokenPipeError:
+        # Piped into head/less and the reader went away: point stdout at
+        # /dev/null so the interpreter's final flush can't re-raise on exit.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(1)
