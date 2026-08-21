@@ -269,6 +269,12 @@ def _run_one(
     env["SCROLL_RUN_ID"] = run_id
     env["SCROLL_MEMORY_DB"] = cfg.memory.db_path
     env["SCROLL_HISTORY_MAX_TOKENS"] = str(cfg.memory.history_max_tokens)
+    # setdefault: a shell-set SCROLL_SUMMARY_CHUNK_TOKENS keeps precedence over
+    # the config knob, matching the in-process agent's env-first resolution.
+    if cfg.memory.summary_chunk_tokens is not None:
+        env.setdefault(
+            "SCROLL_SUMMARY_CHUNK_TOKENS", str(cfg.memory.summary_chunk_tokens)
+        )
     if cfg.tools is not None:
         env["SCROLL_TOOLS"] = ",".join(cfg.tools)
     return _invoke_harbor(cmd, task_output_dir, env=env, verbose=verbose)

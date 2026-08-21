@@ -132,6 +132,29 @@ def test_sandbox_rejects_unknown_field(tmp_path: Path) -> None:
         config.load(p)
 
 
+def test_summary_chunk_tokens_defaults_to_none(tmp_path: Path) -> None:
+    p = tmp_path / "c.yaml"
+    p.write_text(_minimal())
+    cfg = config.load(p)
+    assert cfg.memory.summary_chunk_tokens is None
+
+
+def test_summary_chunk_tokens_is_parsed(tmp_path: Path) -> None:
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        _minimal("memory: { history_max_tokens: 500000, summary_chunk_tokens: 450000 }\n")
+    )
+    cfg = config.load(p)
+    assert cfg.memory.summary_chunk_tokens == 450000
+
+
+def test_summary_chunk_tokens_rejects_non_positive(tmp_path: Path) -> None:
+    p = tmp_path / "c.yaml"
+    p.write_text(_minimal("memory: { summary_chunk_tokens: 0 }\n"))
+    with pytest.raises(config.ConfigError):
+        config.load(p)
+
+
 def test_string_dataset_is_local_dataset_spec(tmp_path: Path) -> None:
     p = tmp_path / "c.yaml"
     p.write_text(_minimal("dataset: terminal-bench-2.1\n"))

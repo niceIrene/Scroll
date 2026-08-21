@@ -42,10 +42,15 @@ class MemorySpec:
     ``history_max_tokens`` bounds the in-context ``history`` window an agent
     sends to the LLM — dial it down to stress small-context scenarios. The
     large default effectively disables eviction.
+    ``summary_chunk_tokens`` is the summary_baseline arm's per-call input size:
+    each summarization call folds one chunk of this many tokens into the
+    rolling summary. None = the agent's default (50000). Only that arm reads
+    it; the ``SCROLL_SUMMARY_CHUNK_TOKENS`` env var still overrides it.
     """
 
     db_path: str = "~/.scroll/history.db"
     history_max_tokens: int = 1_000_000
+    summary_chunk_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -175,6 +180,15 @@ def load(path: Path) -> RunConfig:
         raise ConfigError(
             f"{path}: memory.history_max_tokens must be an integer >= 1, "
             f"got {memory.history_max_tokens!r}"
+        )
+
+    if memory.summary_chunk_tokens is not None and (
+        not isinstance(memory.summary_chunk_tokens, int)
+        or memory.summary_chunk_tokens < 1
+    ):
+        raise ConfigError(
+            f"{path}: memory.summary_chunk_tokens must be an integer >= 1, "
+            f"got {memory.summary_chunk_tokens!r}"
         )
 
     if verifier.timeout_multiplier is not None and (

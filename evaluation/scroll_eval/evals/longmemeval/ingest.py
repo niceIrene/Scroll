@@ -29,6 +29,7 @@ from typing import Any
 
 from scroll_context import HistoryStore
 from scroll_context import LogEntry
+from scroll_context.manager import _clip_sentences
 
 # Sentinel ``run_id`` every seeded prior-conversation row carries. MUST be
 # "seed": ScrollContextManager.seed_index_map() keys the in-context memory map
@@ -96,8 +97,7 @@ def _session_headline(session_num: int, iso_date: str | None, text: str) -> str:
     """
     tag = f"Session {session_num} | {iso_date}" if iso_date else f"Session {session_num}"
     gist = _strip_filler(" ".join((text or "").split()))
-    if len(gist) > _SESSION_HEADLINE_MAX:
-        gist = gist[:_SESSION_HEADLINE_MAX].rstrip() + "…"
+    gist = _clip_sentences(gist, _SESSION_HEADLINE_MAX)
     return f"{tag} — {gist}" if gist else tag
 
 

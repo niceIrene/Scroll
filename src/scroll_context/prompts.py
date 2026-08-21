@@ -38,9 +38,15 @@ def core_prompt(repl_name: str = "scroll_repl") -> str:
     return _load("core", repl_name)
 
 
-def index_prompt(repl_name: str = "scroll_repl") -> str:
-    """The headline + memory-map guidance (``index.md``), REPL name bound."""
-    return _load("index", repl_name)
+def index_prompt(repl_name: str = "scroll_repl", *, dense: bool = False) -> str:
+    """The headline + memory-map guidance, REPL name bound.
+
+    ``dense=True`` loads ``index-dense.md`` — the variant whose map guidance
+    describes the dense ``topic | outcome | anchors`` seeded headline cards
+    (anchors as retrieval vocabulary, card values as leads to verify, no dates
+    in card text) instead of ``index.md``'s topic/summary endpoints.
+    """
+    return _load("index-dense" if dense else "index", repl_name)
 
 
 def var_prompt(repl_name: str = "scroll_repl") -> str:
@@ -71,16 +77,19 @@ def protocol_prompt(
     *,
     index: bool = True,
     var_context: bool = False,
+    dense_index: bool = False,
 ) -> str:
     """The full scroll protocol for one configuration, ready to embed.
 
     ``index`` appends the headline/map guidance; off, it also strips the
-    ``headline`` column from the schema docs. ``var_context`` appends the
+    ``headline`` column from the schema docs. ``dense_index`` swaps that
+    guidance for ``index-dense.md`` (dense seeded headline cards — pair with
+    the ``--dense`` seed ingest). ``var_context`` appends the
     variables-as-working-context addendum.
     """
     parts = [core_prompt(repl_name)]
     if index:
-        parts.append(index_prompt(repl_name))
+        parts.append(index_prompt(repl_name, dense=dense_index))
     if var_context:
         parts.append(var_prompt(repl_name))
     out = "\n\n".join(p.rstrip() for p in parts)

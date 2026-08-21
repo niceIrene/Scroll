@@ -444,6 +444,7 @@ class ScrollContextManager:
         pinned: int = 1,
         enable_index: bool | None = None,
         index_level_cap: int | None = None,
+        dense_index: bool | None = None,
         obs_keep_turns: int | None = "env",  # type: ignore[assignment]
         execute_timeout_s: float = 60.0,
         tool_result_cap_chars: int | None = -1,  # -1 = auto (budget-scaled)
@@ -492,6 +493,13 @@ class ScrollContextManager:
         if index_level_cap is None:
             raw = os.environ.get("SCROLL_INDEX_LEVEL_CAP", "").strip()
             index_level_cap = int(raw) if raw.isdigit() else _INDEX_LEVEL_CAP
+        # Dense-headline prompt variant: swap index.md for index-dense.md so
+        # the map guidance matches the seeded card format. Defaults from the
+        # SAME env var the `--dense` seed-ingest toggle sets, so prompt and
+        # seed data agree without extra plumbing.
+        if dense_index is None:
+            dense_index = _env_flag("SCROLL_SEED_DENSE_HEADLINES", False)
+        self._dense_index = bool(dense_index)
         self._index = EvictionIndex(session_id=session_id, level_cap=index_level_cap)
         self._obs_keep_turns = (
             _obs_keep_turns_from_env() if obs_keep_turns == "env" else obs_keep_turns
@@ -1207,6 +1215,7 @@ class ScrollContextManager:
             self._repl_name,
             index=self._enable_index,
             var_context=self._var_context,
+            dense_index=self._dense_index,
         )
 
     def digest_message(self, budget_note: str | None = None) -> dict:
@@ -1589,6 +1598,7 @@ class ScrollContextManager:
         out["est_input_tokens"] = self.est_input
         out["history_max_tokens"] = self.history_max_tokens
         out["index_enabled"] = self._enable_index
+        out["dense_index"] = self._dense_index
         out["var_context"] = self._var_context
         out["pinned_views"] = len(self._views.pins)
         return out

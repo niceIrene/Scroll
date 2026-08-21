@@ -193,6 +193,13 @@ def beam(
              "the last N turns (sets SCROLL_VAR_CONTEXT). Omit to use the "
              "env/default (off).",
     ),
+    dense: Optional[bool] = typer.Option(
+        None, "--dense/--no-dense",
+        help="Seed from <task_dir>/headlines-dense.json (the dense per-exchange "
+             "headline set) instead of headlines.json (sets "
+             "SCROLL_SEED_DENSE_HEADLINES). Fails if the dense file is missing. "
+             "Omit to use the env/default (off).",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output."),
 ) -> None:
     """Run the BEAM long-term-memory benchmark natively (no Harbor sandbox)."""
@@ -241,6 +248,9 @@ def beam(
     # --index/--no-index above.
     if var_context is not None:
         os.environ["SCROLL_VAR_CONTEXT"] = "1" if var_context else "0"
+    # Dense-headline toggle: same pattern; the runner reads it at ingest time.
+    if dense is not None:
+        os.environ["SCROLL_SEED_DENSE_HEADLINES"] = "1" if dense else "0"
     cfg = cfg_mod.load(config_path)
     if scale is not None:
         tier = scale.upper()

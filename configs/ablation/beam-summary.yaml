@@ -9,8 +9,9 @@
 #
 # history_max_tokens does not bind in this arm (the QA prompt is the summary,
 # capped at 4000 tokens by the template); it is kept for config parity. The
-# arm-specific knob is SCROLL_SUMMARY_CHUNK_TOKENS (summarizer per-call input,
-# default 50000; changing it invalidates the summary cache).
+# arm-specific knob is memory.summary_chunk_tokens (summarizer per-call input;
+# changing it invalidates the summary cache). The SCROLL_SUMMARY_CHUNK_TOKENS
+# env var overrides the config value.
 #
 # Cost: the seed summary is computed ONCE per task and cached next to the seed
 # DB (<db>.summary.json) — sibling probes reuse it, so per-probe cost is one QA
@@ -28,7 +29,18 @@ model:
   thinking_budget: 4000
 dataset: { type: local, name: beam }
 tasks: all
-budget: { max_tokens: 4000000, wall_time_s: 600 }   # per probe (one agent.run)
-memory: { history_max_tokens: 500000 }              # unused here; parity only
+# wall_time_s must cover the FIRST probe's full summarization pass (a 10M-tier
+# task at 900K chunks is ~14 sequential ~2min fold calls); later probes hit the
+# summary cache and only pay the QA call. At 600s no probe ever completed the
+# pass, so the cache never wrote and every probe answered from an empty summary.
+budget: { max_tokens: 4000000, wall_time_s: 3600 }  # per probe (one agent.run)
+memory:
+  history_max_tokens: 500000    # unused here; parity only
+  # Summarizer per-call input. 900000 ~fills the model's 1M window (with
+  # headroom for the template, previous summary, thinking, and the chars/4
+  # estimate's error) — the steel-manned summarizer. 450000 matches the longctx
+  # arm's effective window (500K * 0.9 safety) for strict budget parity;
+  # 50000 was the historical default. Changing this invalidates the cache.
+  summary_chunk_tokens: 900000
 trace: { run_id: auto, phoenix_project: beam-ablation }
 tools: [submit_answer]

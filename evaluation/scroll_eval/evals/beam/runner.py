@@ -197,6 +197,7 @@ async def _answer_probe(
         run_id=run_id,
         history_db_path=str(history_db),
         history_max_tokens=cfg.memory.history_max_tokens,
+        summary_chunk_tokens=cfg.memory.summary_chunk_tokens,
         logs_dir=str(probe_dir),
         system_prompt=system_prompt,        # the repetitive guidance lives here, once
         shared_run_ids=(SEED_RUN_ID,),      # seed tier shared; probe turns stay private
@@ -340,8 +341,16 @@ async def _run_task_async(
     seed_index = os.environ.get("SCROLL_SEED_INDEX", "").strip().lower() in (
         "1", "true", "yes", "on"
     )
+    # Dense-headline toggle (`--dense`): seed from headlines-dense.json instead
+    # of headlines.json. Same env plumbing as the other ablation switches.
+    dense_headlines = os.environ.get(
+        "SCROLL_SEED_DENSE_HEADLINES", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
     seed_db = task_out / "seed.db"
-    n_turns = build_seed_db_for_task(task_dir, task_id, seed_db, seed_index=seed_index)
+    n_turns = build_seed_db_for_task(
+        task_dir, task_id, seed_db,
+        seed_index=seed_index, dense_headlines=dense_headlines,
+    )
     history_db = task_out / "history.db"
     shutil.copyfile(seed_db, history_db)
 
@@ -507,7 +516,10 @@ def run(
         "model": {"endpoint": cfg.model.endpoint, "name": cfg.model.name},
         # The grader: SCROLL_JUDGE_MODEL when set, else the agent model.
         "judge": {"name": os.environ.get("SCROLL_JUDGE_MODEL") or cfg.model.name},
-        "memory": {"history_max_tokens": cfg.memory.history_max_tokens},
+        "memory": {
+            "history_max_tokens": cfg.memory.history_max_tokens,
+            "summary_chunk_tokens": cfg.memory.summary_chunk_tokens,
+        },
         "tasks": task_names,
         "mean_reward": (sum(scored) / len(scored)) if scored else None,
         "timestamp_utc": timestamp,

@@ -29,6 +29,7 @@ from typing import Any, Iterator
 
 from scroll_context import HistoryStore
 from scroll_context import LogEntry
+from scroll_context.manager import _clip_sentences
 
 # Sentinel ``run_id`` every seeded prior-conversation row carries. It marks a
 # row as the chat's shared "long-term memory" tier — visible to every probe of
@@ -155,8 +156,7 @@ def _session_headline(turn: dict, *, anchor: str | None = None) -> str:
     session = turn.get("batch")
     tag = f"Session {session} | {anchor}" if anchor else f"Session {session}"
     gist = _strip_filler(" ".join(clean_content(turn.get("content", "")).split()))
-    if len(gist) > _SESSION_HEADLINE_MAX:
-        gist = gist[:_SESSION_HEADLINE_MAX].rstrip() + "…"
+    gist = _clip_sentences(gist, _SESSION_HEADLINE_MAX)
     return f"{tag} — {gist}" if gist else tag
 
 
@@ -286,20 +286,31 @@ def build_seed_db_for_task(
     db_path: str | Path,
     *,
     seed_index: bool = True,
+    dense_headlines: bool = False,
 ) -> int:
     """Convenience: read ``<task_dir>/chat.json`` and build its seed DB.
 
     If ``<task_dir>/headlines.json`` exists (written by ``headlines.py``), its
     model-written per-turn headlines are used; otherwise the extractive
-    milestone fallback applies. ``seed_index=False`` (the ``--no-index``
-    ablation) leaves the ``headline`` column NULL regardless — see
-    ``build_seed_db``.
+    milestone fallback applies. ``dense_headlines=True`` (the ``--dense``
+    toggle) reads ``headlines-dense.json`` instead — the dense per-exchange
+    variant kept alongside the default file — and fails loudly if that file is
+    missing, since the caller explicitly asked for it. ``seed_index=False``
+    (the ``--no-index`` ablation) leaves the ``headline`` column NULL
+    regardless — see ``build_seed_db``.
     """
     import json
 
     task_dir = Path(task_dir)
     chat = json.loads((task_dir / "chat.json").read_text(encoding="utf-8"))
-    headlines_path = task_dir / "headlines.json"
+    if dense_headlines:
+        headlines_path = task_dir / "headlines-dense.json"
+        if not headlines_path.exists():
+            raise FileNotFoundError(
+                f"--dense requested but {headlines_path} does not exist"
+            )
+    else:
+        headlines_path = task_dir / "headlines.json"
     headlines = (
         json.loads(headlines_path.read_text(encoding="utf-8"))
         if headlines_path.exists()

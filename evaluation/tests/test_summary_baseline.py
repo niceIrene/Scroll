@@ -8,8 +8,10 @@ from unittest.mock import AsyncMock
 from opentelemetry import trace
 
 from scroll_eval.base_agents.summary_baseline.agent import (
+    _DEFAULT_CHUNK_TOKENS,
     _build_summary_prompt,
     _chunk_rows,
+    _chunk_tokens,
     _clean_summary,
     _load_seed_rows,
     run as baseline_run,
@@ -33,7 +35,14 @@ def _chat() -> list[dict]:
     ]
 
 
-def _ctx(model, db_path, history_max_tokens=None, system_prompt=None, logs_dir=None):
+def _ctx(
+    model,
+    db_path,
+    history_max_tokens=None,
+    system_prompt=None,
+    logs_dir=None,
+    summary_chunk_tokens=None,
+):
     return LoopContext(
         llm_openai=None,
         llm_agentscope=model,
@@ -45,6 +54,7 @@ def _ctx(model, db_path, history_max_tokens=None, system_prompt=None, logs_dir=N
         run_id="r",
         history_db_path=db_path,
         history_max_tokens=history_max_tokens,
+        summary_chunk_tokens=summary_chunk_tokens,
         logs_dir=logs_dir,
         system_prompt=system_prompt,
     )
@@ -120,6 +130,29 @@ def test_build_summary_prompt_initial_vs_update():
 def test_clean_summary_strips_fence_and_source_links():
     fenced = "```markdown\n## Active Task\nthing [seq:3-7] done [file:a.py]\n```"
     assert _clean_summary(fenced) == "## Active Task\nthing  done"
+
+
+def test_chunk_tokens_precedence_env_then_ctx_then_default(monkeypatch):
+    monkeypatch.delenv("SCROLL_SUMMARY_CHUNK_TOKENS", raising=False)
+    assert _chunk_tokens(None) == _DEFAULT_CHUNK_TOKENS
+    ctx = _ctx(None, None, summary_chunk_tokens=450_000)
+    assert _chunk_tokens(ctx) == 450_000
+    monkeypatch.setenv("SCROLL_SUMMARY_CHUNK_TOKENS", "1234")
+    assert _chunk_tokens(ctx) == 1234  # env var wins over the config knob
+
+
+def test_run_uses_ctx_summary_chunk_tokens(tmp_path, monkeypatch):
+    """The config knob shapes chunking end-to-end when the env var is unset."""
+    monkeypatch.delenv("SCROLL_SUMMARY_CHUNK_TOKENS", raising=False)
+    db = tmp_path / "seed.db"
+    build_seed_db(_chat(), "beam/t1", db)
+    model = AsyncMock(side_effect=[_fake_response(_SUMMARY_MD), _fake_response("42")])
+    # A huge chunk budget folds the whole seed in ONE call: 1 fold + 1 QA.
+    ctx = _ctx(model, str(db), summary_chunk_tokens=1_000_000)
+    traj = asyncio.run(baseline_run(TaskSpec(task_id="t", instruction="q?"), ctx))
+    assert traj.metrics["chunk_tokens"] == 1_000_000
+    assert traj.metrics["summary_chunks"] == 1
+    assert traj.final_answer == "42"
 
 
 def test_run_rolls_summary_then_answers_from_it(tmp_path, monkeypatch):

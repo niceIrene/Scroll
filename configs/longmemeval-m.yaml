@@ -19,6 +19,6 @@ model:
 dataset: { type: local, name: longmemeval-m }
 tasks: all
 budget: { max_tokens: 2000000, wall_time_s: 600 }   # per probe (one agent.run)
-memory: { history_max_tokens: 32000 }               # small window -> forces retrieval
+memory: { history_max_tokens: 1000000 }               # small window -> forces retrieval
 trace: { run_id: auto, phoenix_project: longmemeval-m }
 tools: [execute_python, submit_answer]            # no bash: LME needs no shell

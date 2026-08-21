@@ -69,6 +69,9 @@ class LoopContext:
                     store. None lets the agent/runtime pick its default.
     history_max_tokens  Token bound for the in-context history window an agent
                     sends to the LLM. None means "don't bound".
+    summary_chunk_tokens  Per-call input size (tokens) for the summary_baseline
+                    arm's summarization calls. None = the agent's default.
+                    Other agents ignore it.
     logs_dir        Directory where the harness writes this task's artifacts
                     (trajectory.json, etc.). Agents may drop extra debug
                     artifacts here. None outside the harness.
@@ -97,6 +100,7 @@ class LoopContext:
     run_id: str | None = None
     history_db_path: str | None = None
     history_max_tokens: int | None = None
+    summary_chunk_tokens: int | None = None
     logs_dir: str | None = None
     system_prompt: str | None = None
     shared_run_ids: tuple[str, ...] = ()

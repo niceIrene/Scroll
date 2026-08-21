@@ -21,9 +21,11 @@ query access and writes nothing.
 
 Budget: ``ctx.history_max_tokens`` does not bind here — the final QA prompt is
 the summary itself, which the template caps at 4000 tokens. The arm-specific
-knob is the summarizer's per-call input size, ``SCROLL_SUMMARY_CHUNK_TOKENS``
-(default 50000): each summarization call sees one chunk of that many tokens
-plus the previous summary.
+knob is the summarizer's per-call input size: ``memory.summary_chunk_tokens``
+in the run config (threaded through ``ctx.summary_chunk_tokens``), overridable
+via the ``SCROLL_SUMMARY_CHUNK_TOKENS`` env var, default 50000. Each
+summarization call sees one chunk of that many tokens plus the previous
+summary.
 
 Cost shape: the beam runner calls ``run()`` once PER PROBE, and every probe of
 a task shares one seed DB — so the seed summary is computed ONCE per task and
@@ -103,10 +105,20 @@ _CACHE_SUFFIX = ".summary.json"
 _summary_locks: dict[tuple[object, str], asyncio.Lock] = {}
 
 
-def _chunk_tokens() -> int:
-    """The summarizer's per-call input budget (tokens), env-overridable."""
+def _chunk_tokens(ctx: LoopContext | None = None) -> int:
+    """The summarizer's per-call input budget (tokens).
+
+    Precedence mirrors longctx_baseline._budget_tokens: the env var wins, then
+    the config knob (``memory.summary_chunk_tokens``, threaded through
+    ``ctx.summary_chunk_tokens``), then the built-in default.
+    """
     raw = os.environ.get("SCROLL_SUMMARY_CHUNK_TOKENS", "").strip()
-    return int(raw) if raw.isdigit() else _DEFAULT_CHUNK_TOKENS
+    if raw.isdigit():
+        return int(raw)
+    configured = getattr(ctx, "summary_chunk_tokens", None)
+    if configured:
+        return int(configured)
+    return _DEFAULT_CHUNK_TOKENS
 
 
 def _cache_lock(db_path: str) -> asyncio.Lock:
@@ -227,7 +239,7 @@ async def run(task: TaskSpec, ctx: LoopContext) -> Trajectory:
     system_content = f"{base}\n\n{extra}" if extra else base
 
     rows = _load_seed_rows(ctx.history_db_path) if ctx.history_db_path else []
-    chunk_tokens = _chunk_tokens()
+    chunk_tokens = _chunk_tokens(ctx)
     chunks = _chunk_rows(rows, chunk_tokens * _CHARS_PER_TOKEN)
 
     prompt_log = _open_prompt_log(getattr(ctx, "logs_dir", None))
