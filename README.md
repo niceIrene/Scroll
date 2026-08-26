@@ -8,7 +8,8 @@ demand** by writing Python against a read-only memory API (`ms`) inside a
 persistent REPL.
 
 This repository contains the runtime, a reusable context-management library,
-two reference agents, and the three benchmarks used to evaluate them.
+the reference scroll agents plus baseline/ablation agents, and the three
+benchmarks used to evaluate them.
 
 ## Layout
 
@@ -19,9 +20,10 @@ independent, never-published project holding everything experiment-related.
 ```
 pyproject.toml               The scroll-context package (src-layout).
 src/scroll_context/          Public API: ScrollContextManager (+ the prompt
-                             protocol core.md / index.md, the scroll_repl tool
-                             schema, and HistoryStore/LogEntry for seeding
-                             prior-session tiers).
+                             protocol core.md / index.md / index-dense.md /
+                             vars.md, the scroll_repl tool schema, and
+                             HistoryStore/LogEntry for seeding prior-session
+                             tiers).
   _runtime/                  PRIVATE internals — never import directly:
                              HistoryStore impl (SQLite conversation_history +
                              FTS5), MemorySpace (ms.search / ms.expand /
@@ -32,21 +34,35 @@ evaluation/                  Independent evaluation project (scroll-eval):
   pyproject.toml             Depends on scroll-context via the workspace.
   scroll_eval/
     base_agents/
+      scroll_react/          ReAct loop with scroll context management, fully
+                             delegated to ScrollContextManager (the reference
+                             integration).
+      scroll_codact/         CodeAct variant: task tools are functions inside
+                             the REPL namespace instead of top-level tools.
+      scroll_tools/          Ablation arm: DB retrieval without the REPL
+                             (search_history / expand_turns as plain tools).
       base_agent_A/          Minimal ReAct loop (no scroll) — the baseline.
-      scroll_agent_A/        The same loop with scroll context management,
-                             fully delegated to ScrollContextManager.
+      longctx_baseline/      Vanilla long-context baseline (transcript
+                             stuffing + recency truncation; no tools).
+      summary_baseline/      Rolling-summary baseline (incremental
+                             continuation summary; no DB, no REPL).
     evals/beam/              BEAM long-term-memory benchmark (+ LLM judge).
     evals/longmemeval/       LongMemEval memory-QA benchmark (+ LLM judge).
     evals/terminal_bench/    Terminal-Bench integration (Harbor sandbox).
     harness/                 Run orchestration: config, run dirs, summaries.
-    cli.py                   The `scroll-eval` command.
+    runner.py                The shared agent-loop runner.
+    cli.py                   The `scroll-eval` command (run / beam /
+                             longmemeval / summary / compare).
     edgebench_entry.py       Standalone workspace-agent entrypoint.
   tests/                     Evaluation tests.
-configs/                     beam.yaml, longmemeval.yaml, terminal-bench.yaml
-local-tasks/                 Benchmark task data (beam/, longmemeval/,
-                             terminal-bench-2.1/).
-scripts/                     Run-analysis utilities (beam_analysis.py, ...) and
-                             gen_longmemeval_tasks.py (task materialization).
+configs/                     beam.yaml, longmemeval.yaml, longmemeval-m.yaml,
+                             terminal-bench.yaml, ablation/*.yaml.
+local-tasks/                 Materialized benchmark task data (beam/,
+                             longmemeval/, longmemeval-m/, terminal-bench-2.1/).
+scripts/                     Task materialization (migrate_beam.py,
+                             gen_longmemeval_tasks.py) and run-analysis
+                             utilities (beam_analysis.py, lme_analysis.py,
+                             ablation_compare.py, dump_run_cost.py, ...).
 runs/                        Run outputs (gitignored).
 ```
 
@@ -143,9 +159,10 @@ system = {
 }
 messages = [system, {"role": "user", "content": task}]
 mgr.record_initial_prompt(messages[1])
+mgr.prime_prior_sessions(messages)  # fold prior-session spans into the map
 
 while not done:
-    mgr.manage(messages)  # age + evict + map
+    mgr.manage(messages)  # age/virtualize + evict + refresh map
     call = messages + [mgr.digest_message()]  # ephemeral digest
     assistant = llm(call, tools=[SCROLL_REPL_TOOL_SCHEMA, ...])
     messages.append(assistant)
@@ -155,15 +172,51 @@ while not done:
         tool_msg = {"role": "tool", "tool_call_id": ..., "content": out}
         messages.append(tool_msg)
         mgr.record_tool_result(tool_msg, tool_name="scroll_repl")
+mgr.close_session(final_answer)  # durable session_record for future sessions
 mgr.close()
 ```
 
+The full integration contract, by lifecycle stage (all messages are plain
+OpenAI chat dicts, and the SAME dict objects passed to `record_*` must be the
+ones kept in the message list — bookkeeping is by object identity):
+
+- **Setup** — construct `ScrollContextManager`; embed `mgr.protocol_prompt()`
+  in the system prompt; expose `SCROLL_REPL_TOOL_SCHEMA` (or your own tool
+  named `repl_name`); `mgr.record_initial_prompt(task_msg)`; optionally
+  `mgr.prime_prior_sessions(messages)` to seed the map from shared tiers /
+  this agent's own prior `session_record` rows (or pass explicit spans).
+- **Every loop step** — `mgr.manage(messages)` before the API call (mutates
+  the list in place: aging or var-context virtualization/distillation,
+  budget eviction, index placeholder); append `mgr.digest_message()`
+  ephemerally (never persist it); after the response,
+  `mgr.record_assistant_turn(msg, usage)`; answer REPL calls with
+  `mgr.execute_python(source)` (or `execute_python_async` inside an event
+  loop) and record every tool result — REPL or external — with
+  `mgr.record_tool_result(tool_msg, tool_name=...)`.
+- **As they occur** — `mgr.record_user_message(msg, messages=messages)` for
+  an interleaved user turn (this folds the previous turn via `close_turn`);
+  `mgr.record_tool_call(...)` for a terminal call with no result message
+  (e.g. `submit_answer`).
+- **Teardown** — `mgr.close_session(final_answer)` (writes the durable
+  `session_record` future sessions prime from), `mgr.metrics()` if you want
+  totals, then `mgr.close()`.
+
 Inside the REPL the model has: `ms.search(...)`, `ms.expand(...)`,
 `ms.sql_query(...)`, `ms.session_id` / `ms.task_id`, `or_terms([...])`,
-`days_between(d1, d2)`, a persistent variable namespace, and the `⟦ headline ⟧`
-fence that turns a milestone line into a durable, indexable headline.
+`days_between(d1, d2)`, a persistent variable namespace, the `⟦ headline ⟧`
+fence that turns a milestone line into a durable, indexable headline, and — in
+var-context mode — the `pin` / `note` / `show` variable-curation ops.
 
-Feature knobs (env): `SCROLL_EVICTION_INDEX` (index map on/off),
-`SCROLL_INDEX_LEVEL_CAP`, `SCROLL_SEED_INDEX` (seeded [memory] map),
-`SCROLL_OBS_KEEP_TURNS` (observation aging window),
-`SCROLL_FORCE_FINAL_ANSWER`, `SCROLL_MAX_STEPS`.
+Package feature knobs (env, read by `scroll_context` itself; constructor
+params take precedence): `SCROLL_EVICTION_INDEX` (index map on/off),
+`SCROLL_INDEX_LEVEL_CAP`, `SCROLL_OBS_KEEP_TURNS` (observation aging window),
+`SCROLL_VAR_CONTEXT` (var-context mode) and its tuning family
+(`SCROLL_VAR_KEEP_THOUGHTS`, `SCROLL_VAR_FALLBACK_CHARS`,
+`SCROLL_KEEP_TURNS_VERBATIM`, `SCROLL_TURN_ASK_CHARS`,
+`SCROLL_TURN_ANS_CHARS`), `SCROLL_SEED_DENSE_HEADLINES` (dense-headline index
+prompt variant).
+
+Evaluation-harness knobs (env, read by `scroll-eval`, not the package):
+`SCROLL_SEED_INDEX` (seeded [memory] map), `SCROLL_MAX_STEPS`,
+`SCROLL_FORCE_FINAL_ANSWER`, `SCROLL_MODEL` / `SCROLL_JUDGE_MODEL`, and
+others — see `evaluation/scroll_eval/harness/`.
