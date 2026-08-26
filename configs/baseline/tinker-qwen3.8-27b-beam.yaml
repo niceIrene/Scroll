@@ -1,0 +1,25 @@
+# Untrained-baseline BEAM run for the post-training plan: Qwen3.8-27B sampled
+# through Tinker (endpoint: tinker -> scroll_eval.tinker_backend.TinkerChatModel),
+# identical harness/prompts/budgets to configs/beam.yaml so scores are directly
+# comparable with the DashScope rows.
+#
+# Requires: TINKER_API_KEY (agent), plus a judge on a normal chat endpoint:
+#   SCROLL_JUDGE_BASE_URL, SCROLL_JUDGE_MODEL, DASHSCOPE_API_KEY (judge key).
+# Drive with: uv run scroll-eval beam configs/baseline/tinker-qwen3.8-27b-beam.yaml
+#
+# model.name is the Tinker model id — verify against the live models list
+# (tinker-docs models page) before a run; swap in a tinker://.../sampler_weights/...
+# path here to evaluate a trained checkpoint through the same pipeline.
+agent: { type: base_agents, id: scroll_react }
+model:
+  endpoint: tinker
+  name: Qwen/Qwen3.8-27B
+  api_key_env: TINKER_API_KEY
+  thinking: true         # Qwen3 hybrid thinking via the chat template's enable_thinking
+  # thinking_budget has no Tinker-side equivalent; omit (unsupported, ignored).
+dataset: { type: local, name: beam }
+tasks: all
+budget: { max_tokens: 4000000, wall_time_s: 600 }   # per probe (one agent.run)
+memory: { history_max_tokens: 500000 }              # small window -> forces retrieval
+trace: { run_id: auto, phoenix_project: beam-tinker-baseline }
+tools: [execute_python, submit_answer]              # no bash: BEAM needs no shell

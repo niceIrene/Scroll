@@ -705,7 +705,14 @@ async def run(task: TaskSpec, ctx: LoopContext) -> Trajectory:
                 call_id = getattr(call, "id", None) or uuid.uuid4().hex
 
                 if name == "submit_answer":
-                    final_answer = str(args.get("answer", ""))
+                    final_answer = str(args.get("answer", "") or "")
+                    if not final_answer.strip():
+                        # Some models (observed: Qwen3.8-27B, XML tool-call
+                        # format) state the full answer in visible text and then
+                        # call submit_answer with no parameter. Same salvage as
+                        # the reserved-turn path: commit the turn's visible text
+                        # (or its reasoning) rather than an empty answer.
+                        final_answer = thought.strip() or (reasoning or "").strip()
                     terminated = TerminationReason.SUCCESS
                     forced_final_answer = force_submit
                     history.append(
