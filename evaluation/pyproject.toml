@@ -30,6 +30,13 @@ beam = [
     "scipy>=1.11",
     "json-repair>=0.25",
 ]
+# Tinker sampling backend (scroll_eval.tinker_backend): baseline evals of
+# untrained base models and tinker:// LoRA checkpoints. transformers supplies
+# the HF chat-template tokenizer fallback when the SDK doesn't expose one.
+tinker = [
+    "tinker",
+    "transformers>=4.51",
+]
 
 [project.scripts]
 scroll-eval = "scroll_eval.cli:app"

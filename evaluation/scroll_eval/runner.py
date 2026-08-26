@@ -208,6 +208,20 @@ def _build_agentscope_model(
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("DASHSCOPE_API_KEY") or ""
     base_url = os.environ.get("OPENAI_BASE_URL") or ""
 
+    # `endpoint: tinker` routes model calls through the Tinker SDK (baseline
+    # evals of untrained base models and, later, tinker:// LoRA checkpoints).
+    # SCROLL_MODEL carries the config's full model id — `bare_model` has the
+    # org prefix stripped, which would corrupt "Qwen/..." ids and tinker://
+    # paths. Thinking maps to the chat template's enable_thinking switch;
+    # thinking_budget has no server-side equivalent and is ignored.
+    if base_url.strip().lower().startswith("tinker"):
+        from scroll_eval.tinker_backend import TinkerChatModel
+
+        return TinkerChatModel(
+            os.environ.get("SCROLL_MODEL") or bare_model,
+            thinking=thinking,
+        )
+
     # Backstop against indefinitely stalled requests (openai.AsyncClient
     # timeout: total wait for non-streamed calls, max inter-chunk gap for
     # streamed ones). Default is deliberately generous — 600s, the per-probe

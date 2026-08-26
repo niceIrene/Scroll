@@ -42,6 +42,7 @@ from scroll_eval.harness.runner import (
     _model_api_key_env,
     _slug,
     _uses_dashscope,
+    _uses_tinker,
     _validate_keys,
 )
 from scroll_eval.runner import _build_agentscope_model, _trajectory_json
@@ -147,7 +148,11 @@ def _prepare_env(cfg: RunConfig) -> None:
     os.environ.setdefault("SCROLL_SEED_INDEX", "1")
     key_env = _model_api_key_env(cfg)
     if key_env and os.environ.get(key_env):
-        os.environ.setdefault("OPENAI_API_KEY", os.environ[key_env])
+        # Under the Tinker backend nothing reads OPENAI_API_KEY (the SDK takes
+        # TINKER_API_KEY directly) — and the LLM judge falls back to
+        # OPENAI_API_KEY, so mirroring the Tinker key there would break grading.
+        if not _uses_tinker(cfg):
+            os.environ.setdefault("OPENAI_API_KEY", os.environ[key_env])
         if _uses_dashscope(cfg):
             os.environ.setdefault("DASHSCOPE_API_KEY", os.environ[key_env])
 

@@ -11,11 +11,11 @@ model:
   endpoint: ${OPENAI_BASE_URL}
   name: ${OPENAI_MODEL_NAME}
   api_key_env: OPENAI_API_KEY
-  thinking: true        # DashScope reasoning mode: true to enable (default off)
-  thinking_budget: 4000  # optional cap on reasoning tokens when thinking is on
+  thinking: true # DashScope reasoning mode: true to enable (default off)
+  thinking_budget: 4000 # optional cap on reasoning tokens when thinking is on
 dataset: { type: local, name: beam }
 tasks: all
-budget: { max_tokens: 4000000, wall_time_s: 600 }   # per probe (one agent.run)
-memory: { history_max_tokens: 500000 }              # small window -> forces retrieval
+budget: { max_tokens: 4000000, wall_time_s: 600 } # per probe (one agent.run)
+memory: { history_max_tokens: 256000 } # small window -> forces retrieval
 trace: { run_id: auto, phoenix_project: beam }
-tools: [execute_python, submit_answer]            # no bash: BEAM needs no shell
+tools: [execute_python, submit_answer] # no bash: BEAM needs no shell

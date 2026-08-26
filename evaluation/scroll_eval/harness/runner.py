@@ -104,6 +104,13 @@ def _uses_dashscope(cfg: RunConfig) -> bool:
     return bool(cfg.model.endpoint and "dashscope" in cfg.model.endpoint.lower())
 
 
+def _uses_tinker(cfg: RunConfig) -> bool:
+    """`endpoint: tinker` (or a tinker:// path) selects the Tinker SDK backend."""
+    return bool(
+        cfg.model.endpoint and cfg.model.endpoint.strip().lower().startswith("tinker")
+    )
+
+
 def _model_api_key_env(cfg: RunConfig) -> str | None:
     """Return the env var name that supplies the configured model key.
 

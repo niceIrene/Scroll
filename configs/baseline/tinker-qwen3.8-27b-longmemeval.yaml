@@ -1,0 +1,19 @@
+# Untrained-baseline LongMemEval(S) run: Qwen3.8-27B through Tinker. Mirrors
+# configs/longmemeval.yaml exactly except for the model backend, so scores are
+# directly comparable. Generate tasks first (scripts/gen_longmemeval_tasks.py).
+#
+# Requires: TINKER_API_KEY (agent) + SCROLL_JUDGE_BASE_URL / SCROLL_JUDGE_MODEL /
+# DASHSCOPE_API_KEY (judge). Drive with:
+#   uv run scroll-eval longmemeval configs/baseline/tinker-qwen3.8-27b-longmemeval.yaml
+agent: { type: base_agents, id: scroll_react }
+model:
+  endpoint: tinker
+  name: Qwen/Qwen3.8-27B
+  api_key_env: TINKER_API_KEY
+  thinking: true         # Qwen3 hybrid thinking via the chat template's enable_thinking
+dataset: { type: local, name: longmemeval }
+tasks: all
+budget: { max_tokens: 2000000, wall_time_s: 600 }   # per probe (one agent.run)
+memory: { history_max_tokens: 32000 }               # small window -> forces retrieval
+trace: { run_id: auto, phoenix_project: longmemeval-tinker-baseline }
+tools: [execute_python, submit_answer]              # no bash: LME needs no shell
